@@ -57,8 +57,7 @@ Cable out, Wi-Fi on, from the M1 Max laptop (Swift 6.4 lldb, no on-disk device s
   the debug run did not start. `dvt launch --suspended` returned no pid in three tries, and a single try with a 90 s
   limit failed with "Failed to launch process with bundle identifier". `core-device launch-application`, with and
   without `--suspended`, failed with code 10002. The app was not left running (`proclist` empty, `pkill` run). Earlier
-  runs, with the phone locked but the lock screen showing, launched fine. We did not unlock the phone, so we do not
-  know whether that is the cause.
+  runs, with the phone locked but the lock screen showing, launched fine. We left the phone as it was, so we do not know whether that is the cause.
 - Lead for the breakpoint, not tested: the first sysroot-less run printed "Executable binary changed from <local path>
   to /private/var/containers/...". The USB flow in `device-run.sh` avoids this with
   `target.module[0].SetPlatformFileSpec(<remote path>)`; the tailnet script did not use it. The script now does, and
