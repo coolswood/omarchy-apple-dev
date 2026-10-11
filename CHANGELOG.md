@@ -23,7 +23,7 @@
 
 ### React Native probe
 
-- Seven phone launches with no debugger ended in one abort. Each launch ran under one second. The Hermes bundle loaded and ran. See `receipts/2026-10-11-rnprobe-launch.md`.
+- Seven phone launches with no debugger ended in the same abort. The five crash reports show an abort within one second of launch. The Hermes bundle loaded and ran. See `receipts/2026-10-11-rnprobe-launch.md`.
 - React Native reported: "Failed to call into JavaScript module method RCTEventEmitter.receiveEvent(). Module has not been registered as callable." The cause is unknown.
 - With a debugger attached from launch, the app stayed running for 220 seconds. Nobody checked the screen.
 

@@ -28,7 +28,7 @@ The app then aborted. A control launch at 13:01 CDT used `MallocStackLogging=1` 
 
 ## Launch count
 
-Seven launches without a debugger ended in the same abort within one second. This count includes five crash reports, the stream launch, and the control launch. Earlier launch checks returned a process ID. The app was not running after 10 seconds in those checks.
+Seven launches without a debugger ended in the same abort. This count includes five crash reports, the stream launch, and the control launch. The five crash reports show an abort within one second of launch. The stream launch aborted in the same second it started. The control launch was not timed beyond 25 seconds. Earlier launch checks returned a process ID. The app was not running after 10 seconds in those checks.
 
 ## Debugger run
 
