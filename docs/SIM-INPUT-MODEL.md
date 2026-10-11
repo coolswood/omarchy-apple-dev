@@ -10,13 +10,17 @@ behavior. We have run none of them. Each rule becomes a measured claim when its 
 
 ## One event
 
-An event is one record:
+An event is one frame. It has a time and a list of finger records, one record for each finger that is down or just lifted.
 
-| Field | Meaning |
+| Frame field | Meaning |
 |---|---|
 | `t_ms` | Time in milliseconds from the host clock. It never goes backward. |
-| `finger` | A number from 0 to 9. One number per finger that is down. |
-| `phase` | `began`, `moved`, `ended` or `cancelled`. |
+| `fingers` | The list of finger records. It is never empty. |
+
+| Finger record field | Meaning |
+|---|---|
+| `finger` | A number from 0 to 9. One number for each finger that is down. |
+| `phase` | `began`, `moved`, `ended`, `cancelled` or `stationary`. `stationary` means the finger is down and did not change. |
 | `x`, `y` | Position in scene points. The origin is the top left corner of the scene. |
 
 These four rules are the core of the model.
@@ -24,9 +28,9 @@ These four rules are the core of the model.
 1. Coordinates are scene points, not pixels. A 390 by 844 scene gets the same numbers at any pixel scale.
 2. The target is fixed at touch down. The topmost visible element under the first finger at `began` gets the whole
    touch. It keeps it when the finger leaves the element. All fingers of one gesture share that target.
-3. Every event lists all fingers that are down. When a second finger moves, the event also carries the first finger.
-   A finger that did not change has an empty change mask.
-4. Time comes from the host. Scroll speed and fling use the real gaps between events. Fake, evenly spaced times
+3. Every frame lists all fingers that are down. When a second finger moves, the frame also carries the first finger as
+   `stationary`. A lifted finger appears once, as `ended`, and is gone from the next frame.
+4. Time comes from the host. Scroll speed and fling use the real gaps between frames. Fake, evenly spaced times
    break them.
 
 ## From a Mac-style host to touches
@@ -41,7 +45,7 @@ These four rules are the core of the model.
 | Trackpad rotate | The same two fingers, turned around the cursor. |
 | Two-finger double tap | A double tap at the cursor. |
 
-M3 builds the mouse row only. The scroll and pinch rows are listed so the event record already fits them.
+M3 builds the mouse row only. The scroll and pinch rows are listed so the frame format already fits them.
 
 ## Keys
 
@@ -59,18 +63,20 @@ builds them, and it is not planned yet.
 
 ## The scripted event file for M3
 
-M3 takes taps from a file, with no window:
+M3 takes frames from a file, with no window. A tap is two frames. A two-finger frame lists both fingers:
 
 ```json
 [
-  {"t_ms": 0,   "finger": 0, "phase": "began", "x": 195, "y": 420},
-  {"t_ms": 80,  "finger": 0, "phase": "ended", "x": 195, "y": 420}
+  {"t_ms": 0,   "fingers": [{"finger": 0, "phase": "began", "x": 195, "y": 420}]},
+  {"t_ms": 80,  "fingers": [{"finger": 0, "phase": "ended", "x": 195, "y": 420}]},
+  {"t_ms": 400, "fingers": [{"finger": 0, "phase": "began", "x": 100, "y": 300},
+                            {"finger": 1, "phase": "began", "x": 290, "y": 300}]}
 ]
 ```
 
-A short form `{"tap": [195, 420]}` expands to the two records above, 80 ms apart.
+A short form `{"tap": [195, 420]}` expands to the two frames above, 80 ms apart.
 
-Each event writes one log line: `t=80 finger=0 ended (195,420) target=Button#1 state=count:1 render=ok`.
+Each frame writes one log line for each finger record: `t=80 finger=0 ended (195,420) target=Button#1 state=count:1 render=ok`.
 
 ## M3 tests
 
@@ -83,8 +89,8 @@ Each test runs on Linux with no device. The expected result is written before th
 | Press inside, move out, move back in, lift inside | One action. |
 | Press on a button, drag across a second button, lift on the second | No action on either. The first button owns the touch. |
 | Tap on empty space | No action, no state change, and the log says `target=none`. |
-| Two fingers down, one lifts | Each event lists both fingers until the second lift. |
-| Events out of time order | The runner refuses the file and names the line. |
+| Two fingers down, one lifts | The frame of the lift lists both fingers: one `ended`, one `stationary`. The next frame lists only the finger still down. |
+| Frames out of time order | The runner refuses the file and names the line. |
 | Same file twice | The same log and the same pixels. |
 
 ## What this cannot prove
