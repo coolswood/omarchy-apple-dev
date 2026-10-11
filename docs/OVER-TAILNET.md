@@ -59,7 +59,8 @@ For a signed app build: `./device-run.sh --over-tailnet 100.x.y.z path/to/App.ip
 | Cable out, Wi-Fi on, other subnet than the phone | Works. Same port (49152) before and after a Wi-Fi toggle. |
 | Cable out, Wi-Fi off, cellular + Tailscale | Fails. Port 49152 to 49167 refused; a scan of ports 1-1024 and 49152-65535 found one unrelated open port that does not answer RemotePairing. The phone itself answers `tailscale ping`. |
 | Screen locked (duration not recorded) | Works. Screenshot shows the passcode screen; apps launch behind it. |
-| Screen locked, 30 minutes | Not measured yet. |
+| Screen off and locked, idle for hours (2026-10-11) | The tunnel, pair-verify and a screenshot work. The screenshot is all black. Launching an app fails on both routes: `dvt launch` reports "Failed to launch process with bundle identifier" and `core-device launch-application` reports code 10002. We did not test whether unlocking the phone fixes it. |
+| Screen locked, 30 minutes | Not measured as such. The 2026-10-11 row above covers a longer idle and shows a different result. |
 | `device-run.sh --over-tailnet App.ipa` | Works. Installs and launches a signed ipa, closes the tunnel on exit. |
 
 Receipts and raw output: `receipts/2026-10-10-iphone-over-tailnet.md`.
