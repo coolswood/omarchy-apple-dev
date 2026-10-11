@@ -29,7 +29,8 @@ These four rules are the core of the model.
 2. The target is fixed at touch down. The topmost visible element under the first finger at `began` gets the whole
    touch. It keeps it when the finger leaves the element. All fingers of one gesture share that target.
 3. Every frame lists all fingers that are down. When a second finger moves, the frame also carries the first finger as
-   `stationary`. A lifted finger appears once, as `ended`, and is gone from the next frame.
+   `stationary`. A lifted finger appears once, as `ended`, and is gone from the next frame. A cancelled finger does the
+   same: it appears once, as `cancelled`, and is gone from the next frame.
 4. Time comes from the host. Scroll speed and fling use the real gaps between frames. Fake, evenly spaced times
    break them.
 
@@ -61,7 +62,7 @@ Keys come in two forms.
 Keys need more than input. The app must also know which text field has focus. M3 does not build keys. A rung after M3
 builds them, and it is not planned yet.
 
-## The scripted event file for M3
+## The scripted frame file for M3
 
 M3 takes frames from a file, with no window. A tap is two frames. A two-finger frame lists both fingers:
 
@@ -74,7 +75,7 @@ M3 takes frames from a file, with no window. A tap is two frames. A two-finger f
 ]
 ```
 
-A short form `{"tap": [195, 420]}` expands to the two frames above, 80 ms apart.
+A short form `{"tap": [195, 420]}` expands to the first two frames above, 80 ms apart.
 
 Each frame writes one log line for each finger record: `t=80 finger=0 ended (195,420) target=Button#1 state=count:1 render=ok`.
 
