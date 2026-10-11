@@ -47,12 +47,10 @@ public protocol Scene {
   associatedtype Body: Scene
   var body: Self.Body { get }
   func _simSceneSpec() -> Spec
-  func _simStateRoot() -> Any
 }
 
 public extension Scene {
   func _simSceneSpec() -> Spec { body._simSceneSpec() }
-  func _simStateRoot() -> Any { self }
 }
 
 public protocol App {
@@ -76,12 +74,18 @@ public extension App {
       FileHandle.standardError.write(Data("usage: \(CommandLine.arguments[0]) --out <file.png> [--frames <file.json>]\n".utf8))
       exit(2)
     }
-    let app = Self()
-    let scene = app.body
-    let stateRoot = scene._simStateRoot()
     if let framesFile = framesPath {
       let frames = Sim.loadFrames(framesFile)
-      let canvas = Sim.run(frames: frames, scene: scene, stateRoot: stateRoot)
+      // Every pass rebuilds the whole tree, app included, so each pass
+      // creates the @State wrappers in the same order and reclaims the
+      // same slots. App-level state then re-renders too.
+      let canvas = Sim.run(frames: frames) {
+        Sim.beginStatePass()
+        let app = Self()
+        let scene = app.body
+        let (c, p) = Sim.render(scene._simSceneSpec())
+        return (c, p, [scene, app])
+      }
       do {
         try Sim.writePNG(canvas, to: out)
       } catch {
@@ -90,7 +94,9 @@ public extension App {
       }
       print("wrote \(out) \(canvas.width)x\(canvas.height)")
     } else {
-      let (canvas, _) = Sim.render(scene._simSceneSpec())
+      Sim.beginStatePass()
+      let app = Self()
+      let (canvas, _) = Sim.render(app.body._simSceneSpec())
       do {
         try Sim.writePNG(canvas, to: out)
       } catch {
@@ -143,8 +149,6 @@ public struct WindowGroup<Content: View>: Scene {
   public typealias Body = EmptyScene
   public var body: EmptyScene { EmptyScene() }
   public func _simSceneSpec() -> Spec { content._simSpec() }
-  // The touch loop reads @State values from this retained view.
-  public func _simStateRoot() -> Any { content }
 }
 
 public struct HorizontalAlignment {
@@ -201,15 +205,28 @@ extension Button where Label == Text {
 
 @propertyWrapper
 public struct State<Value> {
-  // Reference cell: copies of the view struct share one box, so the action
-  // closure and the next render see the same value. A write needs no mutable
-  // self, which is why the setter is nonmutating.
+  // Value cell, pooled by position. Every render pass rebuilds the view
+  // tree from scratch, and each pass creates the wrappers in the same
+  // order, so a wrapper's creation index names its slot. A box claimed in
+  // an earlier pass is reused at the same index, which is how an action
+  // closure and the next render share one value. The setter needs no
+  // mutable self, which is why it is nonmutating.
   final class Box {
     var value: Value
     init(_ value: Value) { self.value = value }
   }
   var box: Box
-  public init(wrappedValue: Value) { box = Box(wrappedValue) }
+  public init(wrappedValue: Value) {
+    let i = Sim.nextStateSlot()
+    if i < Sim.stateBoxes.count, let reused = Sim.stateBoxes[i] as? Box {
+      box = reused
+    } else {
+      precondition(i == Sim.stateBoxes.count,
+                   "simview: state slot \(i) changed shape between renders")
+      box = Box(wrappedValue)
+      Sim.stateBoxes.append(box)
+    }
+  }
   public var wrappedValue: Value {
     get { box.value }
     nonmutating set { box.value = newValue }
@@ -232,8 +249,18 @@ enum Sim {
   static let black = Pixel(r: 0, g: 0, b: 0)
   static let blue = Pixel(r: 0x00, g: 0x7A, b: 0xFF)  // #007AFF
 
+  // @State slot pool, see State. beginStatePass() goes with the start of
+  // one tree build; wrappers then claim indexes in creation order.
+  static var stateBoxes: [AnyObject] = []
+  static var stateSlotCursor = 0
+  static func beginStatePass() { stateSlotCursor = 0 }
+  static func nextStateSlot() -> Int {
+    defer { stateSlotCursor += 1 }
+    return stateSlotCursor
+  }
+
   static func flattened(_ s: Spec) -> [Spec] {
-    if case .tuple(let kids) = s { return kids }
+    if case .tuple(let kids) = s { return kids.flatMap(flattened) }
     return [s]
   }
 
@@ -247,10 +274,10 @@ enum Sim {
       return textSize(t)
     case .button(let inner, _):
       return measure(inner)
-    case .tuple(let kids):
-      return stackSize(kids, spacing: 0)
+    case .tuple:
+      return stackSize(flattened(s), spacing: 0)
     case .vstack(_, let spacing, let kids):
-      return stackSize(kids, spacing: spacing)
+      return stackSize(kids.flatMap(flattened), spacing: spacing)
     }
   }
 
@@ -295,13 +322,13 @@ enum Sim {
                             color: blue, buttonId: id, action: action))
       layout(inner, at: x, y: y, width: size.w, color: blue,
              nextButton: &nextButton, into: &out)
-    case .tuple(let kids):
-      layoutStack(kids, spacing: 0, at: x, y: y, width: width,
+    case .tuple:
+      layoutStack(flattened(s), spacing: 0, at: x, y: y, width: width,
                   alignment: HorizontalAlignment(kind: .center), color: color,
                   nextButton: &nextButton, into: &out)
     case .vstack(let alignment, let spacing, let kids):
-      layoutStack(kids, spacing: spacing, at: x, y: y, width: width,
-                  alignment: alignment, color: color,
+      layoutStack(kids.flatMap(flattened), spacing: spacing, at: x, y: y,
+                  width: width, alignment: alignment, color: color,
                   nextButton: &nextButton, into: &out)
     }
   }
@@ -479,18 +506,33 @@ enum Sim {
     id.map { "Button#\($0)" } ?? "none"
   }
 
-  // Reads the @State values of the retained root view by reflection, as
-  // name:value pairs. The wrapper storage label is the property name with a
-  // leading underscore.
-  static func stateDescription(_ root: Any) -> String {
+  // Lists every @State value reachable from the scene and the app, as
+  // name:value pairs, by reflection. A wrapper stores its box under the
+  // property name with a leading underscore, and the box holds the value.
+  // The walk descends into any child that itself has reflective children,
+  // which covers view structs, stacks and tuples; leaves like String, Int
+  // and closures have none and stop the walk. The scene carries the view
+  // tree; the app carries any @State declared on the App struct.
+  static func stateDescription(_ roots: [Any]) -> String {
     var parts: [String] = []
-    for child in Mirror(reflecting: root).children {
-      guard let label = child.label, label.hasPrefix("_") else { continue }
-      guard let box = Mirror(reflecting: child.value).children.first?.value,
-            let val = Mirror(reflecting: box).children.first?.value else { continue }
-      parts.append("\(label.dropFirst()):\(val)")
+    for root in roots {
+      collectState(root, into: &parts)
     }
     return parts.joined(separator: ",")
+  }
+
+  static func collectState(_ value: Any, into parts: inout [String]) {
+    for child in Mirror(reflecting: value).children {
+      if let label = child.label, label.hasPrefix("_"),
+         let box = Mirror(reflecting: child.value).children.first?.value,
+         let val = Mirror(reflecting: box).children.first?.value {
+        parts.append("\(label.dropFirst()):\(val)")
+        continue
+      }
+      if !Mirror(reflecting: child.value).children.isEmpty {
+        collectState(child.value, into: &parts)
+      }
+    }
   }
 
   // Topmost visible element under the point. Later nodes draw on top, so the
@@ -505,10 +547,10 @@ enum Sim {
   }
 
   // The M3 loop: validate first, then walk the frames. Each frame fires the
-  // actions the touch rules allow, re-renders, and logs one line per finger
-  // record after that render succeeds.
-  static func run(frames: [Frame], scene: any Scene, stateRoot: Any) -> Canvas {
-    var (canvas, placed) = render(scene._simSceneSpec())
+  // actions the touch rules allow, rebuilds and re-renders the tree, and
+  // logs one line per finger record after that render succeeds.
+  static func run(frames: [Frame], build: () -> (Canvas, [PlacedNode], [Any])) -> Canvas {
+    var (canvas, placed, roots) = build()
     for node in placed where node.buttonId != nil {
       print("button id=\(node.buttonId!) rect=\(node.x),\(node.y),\(node.w),\(node.h)")
     }
@@ -521,12 +563,10 @@ enum Sim {
         }
         lines.append("t=\(frame.tMs) finger=\(rec.finger) \(rec.phase.rawValue) "
           + "(\(rec.x),\(rec.y)) target=\(targetName(gesture.target)) "
-          + "state=\(stateDescription(stateRoot))")
+          + "state=\(stateDescription(roots))")
       }
       gesture.endIfDone()
-      let next = render(scene._simSceneSpec())
-      canvas = next.0
-      placed = next.1
+      (canvas, placed, roots) = build()
       for line in lines {
         print(line + " render=ok")
       }

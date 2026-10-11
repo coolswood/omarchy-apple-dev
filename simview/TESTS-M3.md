@@ -26,3 +26,13 @@ Tolerances, stated here: log comparison is exact bytes. PNG comparison is
 | 7 | Frames out of time order | frames with `t_ms` 400 then 200 | Exit code nonzero. No PNG written. The error on stderr names the frame index and both times. |
 | 8 | Same file twice | row 1 frames, two runs | Exit 0 twice. The two logs are identical bytes. The two PNGs are identical bytes. |
 | N | Negative control | row 1 checker fed the row 5 no-action log | The checker must fail, so the suite can detect a lost action. |
+
+Rows 9 and 10 were added in review, after the first commit of this file.
+They guard the fixes for two review findings on state handling. The rule
+stands: each expected result here was written before the code that makes it
+pass.
+
+| # | Row | Input | Expected |
+|---|-----|-------|----------|
+| 9 | Nested child state survives the rebuild | `nestedapp`, tap at Button#1 center, the button owned by a child view with its own `@State` | Exit 0. The `ended` line shows `state=taps:1,rounds:0`. The child's box is pooled by slot, so the rebuilt tree reads the new value. |
+| 10 | App state re-renders | `nestedapp`, tap at Button#2 center, the button whose action writes `@State` on the App struct | Exit 0. The `ended` line shows `state=taps:0,rounds:1`. The render after the frame differs from the no-tap render. |

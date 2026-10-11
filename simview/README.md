@@ -65,14 +65,20 @@ The rules: coordinates are scene points, one pixel per point. The topmost
 element under the first finger at `began` owns the whole touch, and keeps it
 when the finger leaves. The action fires only when the last finger ends
 inside that target. A `cancelled` finger kills the touch. Every frame ends
-with a re-render from the current `@State` values, so a fired action shows in
-the final PNG. `@State` stores its value in a reference cell, so copies of a
-view share one box and the action closure writes what the next render reads.
+with a full tree rebuild and a re-render, so a fired action shows in the
+final PNG. `@State` boxes are pooled by creation slot: each pass rebuilds
+the tree, each pass creates the wrappers in the same order, and a box
+claimed in an earlier pass is reused at the same slot. That is why a write
+inside an action closure shows up in the next render, in child views and on
+the App struct alike. The log lists every `@State` value reachable from the
+scene and the app, in tree order.
 
 `simview/test-m3.sh` runs the eight rows of the spec, the demo tap, the
-negative control, and the determinism check. Expected results, written
-before the code: `simview/TESTS-M3.md`. The second app, `m3app`, carries two
-buttons for the drag-across row. Its source is `simview/Sources/M3App/`.
+negative control, the determinism check, and two state regression rows from
+review. Expected results, written before the code: `simview/TESTS-M3.md`.
+The second app, `m3app`, carries two buttons for the drag-across row. The
+third app, `nestedapp`, carries a child view with its own `@State` and a
+state on the App struct. Their sources live under `simview/Sources/`.
 
 ## Limits
 

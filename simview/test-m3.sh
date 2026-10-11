@@ -275,6 +275,34 @@ else
   log "FAIL row 8: runs differ"; fail=1
 fi
 
+echo "== row 9: nested child state survives the rebuild"
+nestrects=$(probe_rects nestedapp)
+rect_center "$(log "$nestrects" | sed -n 1p)"
+write_tap "$bh/row9.json" "$cx" "$cy" 0
+run "$P/nestedapp" --frames "$b/row9.json" --out "$b/row9.png" >"$bh/row9.log" 2>&1
+if [ $? -eq 0 ] && grep -q 'state=taps:1,rounds:0' "$bh/row9.log"; then
+  log "ok   child button state kept its box across the rebuild"
+else
+  log "FAIL row 9"; cat "$bh/row9.log"; fail=1
+fi
+
+echo "== row 10: app state re-renders"
+run "$P/nestedapp" --out "$b/row10-before.png" >/dev/null
+rect_center "$(log "$nestrects" | sed -n 2p)"
+write_tap "$bh/row10.json" "$cx" "$cy" 0
+run "$P/nestedapp" --frames "$b/row10.json" --out "$b/row10.png" >"$bh/row10.log" 2>&1
+rc=$?
+if [ $rc -eq 0 ] && grep -q 'state=taps:0,rounds:1' "$bh/row10.log"; then
+  log "ok   app state survives, action fired"
+else
+  log "FAIL row 10 action"; cat "$bh/row10.log"; fail=1
+fi
+if ! python3 "$here/compare.py" "$bh/row10.png" "$bh/row10-before.png" >/dev/null 2>&1; then
+  log "ok   re-render differs from the no-tap render"
+else
+  log "FAIL row 10: render did not change"; fail=1
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "simview/test-m3.sh: FAILED"
   exit 1
