@@ -40,11 +40,11 @@ pass.
 Rows 11 to 13 came from the second review round, which named three
 implementation changes that could survive the earlier rows. Each row kills
 its named change; the receipt records the failed run against each changed
-build. Rows 9 and 10 do not cover those three. A second finding in that
-round was the state walk following a reference cycle. Rows 9 and 10 now
-double as its check: `nestedapp` holds a self-referencing object, so every
-log line walks past it. Removing the visited-object check makes those rows
-crash; the receipt records that run.
+build. Rows 9 and 10 do not cover those three. The follow-up review then
+found one more defect: the state walk following a reference cycle. Rows 9
+and 10 now double as its check: `nestedapp` holds a self-referencing
+object, so every log line walks past it. Removing the visited-object check
+makes those rows crash; the receipt records that run.
 
 | # | Row | Input | Expected |
 |---|-----|-------|----------|

@@ -525,11 +525,13 @@ enum Sim {
   static func collectState(_ value: Any, into parts: inout [String],
                            seen: inout Set<ObjectIdentifier>) {
     // Only class instances can form reference cycles. Mirror boxing makes
-    // `as? AnyObject` succeed for every value, so the display style decides.
-    if Mirror(reflecting: value).displayStyle == .class,
-       let object = value as? AnyObject,
-       !seen.insert(ObjectIdentifier(object)).inserted {
-      return
+    // `as? AnyObject` succeed for every value, so the display style decides
+    // and the cast below runs only for real class instances.
+    if Mirror(reflecting: value).displayStyle == .class {
+      let object = value as AnyObject
+      if !seen.insert(ObjectIdentifier(object)).inserted {
+        return
+      }
     }
     for child in Mirror(reflecting: value).children {
       if let label = child.label, label.hasPrefix("_"),
