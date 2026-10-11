@@ -49,5 +49,5 @@ qemu-aarch64-static machoload/.build/loader machoload/.build/Hello
 Hello from an iOS Mach-O on Linux
 ```
 
-Status: proven under `qemu-aarch64-static`; the same pair is staged for a
-native aarch64 run (receipts/2026-10-10-machoload-m1.md).
+Status: proven under `qemu-aarch64-static` and natively on an arm64 Linux laptop
+(receipts/2026-10-10-machoload-m1.md).

@@ -35,9 +35,23 @@ results before printing).
 
 ## Native aarch64 run
 
-The same two files are staged at
-`~/scratch/apple-dev/machoload-m1/run/` (loader, Hello, RUN.md) for a
-native aarch64 Linux run on a GUARD ticket. No Mac or device needed.
+2026-10-11, native run on an M1 Max laptop running Linux (kernel
+`7.1.12-2-12.6-sep-ARCH`, `uname -m` = `aarch64`), CPU only, `nice -n 19`, no emulator:
+
+```sh
+$ sha256sum loader Hello      # same hashes as on the build container
+8a89701176c50b549f2e...  loader
+c897c05d4f7f8c89d031...  Hello
+$ ./loader ./Hello
+Hello from an iOS Mach-O on Linux
+$ echo $?
+0
+```
+
+A second run gave exit 0 as well. The two files are the pair staged on 2026-10-10 from the M1 build; the hashes above are
+the first 20 hex digits of each. They were copied to `/tmp` on the laptop for the run and deleted afterwards. A rebuild
+from main on the build container failed on that host's `ld64.lld` ("does not support linking for platform iOS"), so the
+pair was not rebuilt from the merged sources and the hashes were not compared to a fresh build.
 
 ## Not in this step
 

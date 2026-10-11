@@ -140,7 +140,7 @@ A rung is done when its exit check is observed, not argued.
 ### M1 — a Mach-O arm64 hello from our toolchain runs on Linux
 
 Landed on branch `machoload-m1` (commit `a68df70`), proven under `qemu-aarch64-static`;
-the native arm64 run is staged and pending
+also run natively on arm64 Linux
 ([receipt](../receipts/2026-10-10-machoload-m1.md)).
 
 - Entry checks:
@@ -156,7 +156,7 @@ the native arm64 run is staged and pending
   $ echo $?
   0
   ```
-  Still open: the same pair on a native arm64 Linux host.
+  The same pair also printed that line with exit 0 on a native arm64 Linux laptop, with no emulator (2026-10-11).
 - Cannot prove: dyld shared cache loading, the Objective-C runtime, any framework. A
   C-level hello only proves the loader and its syscall shims.
 
