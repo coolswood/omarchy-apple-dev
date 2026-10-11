@@ -1,14 +1,14 @@
-# Input model for the Linux simulation (M3 spec)
+# M3 and M5 input rules
 
-Date: 2026-10-11. Status: implemented at M3. The frame loader, the touch
-rules, and the state to render loop live in `simview/Sources/SwiftUI/`.
-Receipt: `../receipts/2026-10-11-simview-m3.md`.
+Date: 2026-10-11. M3 defines the frame loader and touch rules. M5 adds the
+vertical scroll model. Both are implemented in `simview/Sources/SwiftUI/`.
+Related files: `../receipts/2026-10-11-simview-m3.md` and
+`../receipts/2026-10-11-simview-m5.md`.
 
 This page fixes what a touch or key event is in our Linux simulation, and which rules the M3 tests check.
-It belongs to [IOS-SIMULATION-LINUX.md](IOS-SIMULATION-LINUX.md), rung M3.
+It belongs to [IOS-SIMULATION-LINUX.md](IOS-SIMULATION-LINUX.md), rungs M3 and M5.
 
-The rules come from our reading of published research notes on how iOS apps receive input, and from ordinary iOS
-behavior. We have run none of them. Each rule becomes a measured claim when its M3 test passes.
+The rules describe our simulation. They do not claim to match Apple's input behavior.
 
 ## One event
 
@@ -33,8 +33,7 @@ These four rules are the core of the model.
 3. Every frame lists all fingers that are down. When a second finger moves, the frame also carries the first finger as
    `stationary`. A lifted finger appears once, as `ended`, and is gone from the next frame. A cancelled finger does the
    same: it appears once, as `cancelled`, and is gone from the next frame.
-4. Time comes from the host. Scroll speed and fling use the real gaps between frames. Fake, evenly spaced times
-   break them.
+4. Time comes from the host. M5 uses the drag delta and does not implement fling.
 
 ## From a Mac-style host to touches
 
@@ -42,13 +41,27 @@ These four rules are the core of the model.
 |---|---|
 | Mouse click and drag | Finger 0: `began`, `moved` for each step, `ended`. |
 | Two-finger trackpad scroll | Finger 9. It goes down at the cursor when the scroll begins, moves by each delta, and lifts when the scroll ends. |
-| Scroll momentum events from the host | Dropped. The app does its own deceleration after the lift. |
+| Scroll momentum events from the host | Dropped. M5 does not implement deceleration after the lift. |
 | A scroll that starts and never moves | `cancelled`, so nothing is tapped. |
 | Trackpad pinch | Fingers 7 and 8, placed around the cursor, moved apart or together by the pinch amount. |
 | Trackpad rotate | The same two fingers, turned around the cursor. |
 | Two-finger double tap | A double tap at the cursor. |
 
-M3 builds the mouse row only. The scroll and pinch rows are listed so the frame format already fits them.
+M3 builds mouse frames. M5 adds drag scrolling in our own `ScrollView` model.
+It does not reproduce Apple's scroll implementation.
+
+## M5 scrolling
+
+The M5 runner interprets `began`, `moved`, and `ended` records as one drag.
+It changes the vertical content offset by the finger delta. It clamps the
+offset between zero and the content height minus the viewport height.
+
+Inside a scroll view, a movement greater than eight points crosses the slop.
+The runner cancels the original row tap and applies the drag to scrolling.
+Movement below the slop leaves a tap eligible. This rule applies only inside
+the scroll view. M3 touch tests outside it keep their original behavior.
+
+M5 has no momentum or fling. It does not implement pinch, rotate, or keys.
 
 ## Keys
 
@@ -115,7 +128,7 @@ place of a line number.
 
 - iOS gesture recognizers. We write our own hit testing, so passing proves our model, not Apple's.
 - Edge rules of the real system, such as the edge swipe that goes back, or touches that start in a safe area.
-- The feel of scrolling and fling. Our runner has no deceleration yet.
+- M5 scroll offset is our model. We have not measured it against Apple's behavior.
 - Keyboard focus, dictation, and the pause some apps show the first time a text field gets focus.
 
 The phone path in [OVER-TAILNET.md](OVER-TAILNET.md) can later give a real device to compare against.

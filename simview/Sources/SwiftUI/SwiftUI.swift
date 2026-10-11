@@ -6,9 +6,7 @@
 // and raster pass, and the PNG encoder. No Apple source, no third-party code.
 //
 // Not in this module: real SwiftUI layout, font shaping, animation, Metal.
-// M3 adds the scripted touch loop: a frames file goes through validation,
-// hit testing, the touch rules of docs/SIM-INPUT-MODEL.md, and @State
-// writes, and each frame ends with a re-render. `--frames` turns it on.
+// M3 adds scripted touch frames. M5 adds vertical scrolling.
 
 import Foundation
 
@@ -144,6 +142,7 @@ public enum Spec {
   indirect case titled(String, Spec)
   case hairline
   indirect case navstack(String?, (() -> Void)?, Spec)
+  indirect case scrollview(Binding<Int>, Spec)
 }
 
 public struct TupleView<T>: View {
@@ -260,6 +259,16 @@ public struct List<Content: View>: View {
     }
     return .vstack(HorizontalAlignment(kind: .leading), spacing: 16, children: rows)
   }
+}
+
+// A vertical scroll viewport. Dragging changes the content offset.
+public struct ScrollView<Content: View>: View {
+  @State private var offset = 0
+  let content: Content
+  public init(@ViewBuilder content: () -> Content) { self.content = content() }
+  public typealias Body = EmptyView
+  public var body: EmptyView { EmptyView() }
+  public func _simSpec() -> Spec { .scrollview($offset, content._simSpec()) }
 }
 
 public struct Titled<Content: View>: View {
@@ -405,6 +414,8 @@ enum Sim {
       return measure(child)
     case .link:
       preconditionFailure("simview: NavigationLink outside a NavigationStack")
+    case .scrollview:
+      return Size(w: screenWidth, h: screenHeight)
     case .navstack:
       return Size(w: screenWidth, h: screenHeight)
     }
@@ -467,6 +478,11 @@ enum Sim {
              nextButton: &nextButton, into: &out)
     case .link:
       preconditionFailure("simview: NavigationLink outside a NavigationStack")
+    case .scrollview(let offset, let content):
+      out.append(PlacedNode(spec: s, x: x, y: y, w: screenWidth, h: screenHeight,
+                            color: color, buttonId: nil, action: nil))
+      layout(content, at: 0, y: -offset.get(), width: screenWidth, color: color,
+             nextButton: &nextButton, into: &out)
     case .navstack(let title, let back, let screen):
       layoutNavStack(title, back, screen, nextButton: &nextButton, into: &out)
     }
@@ -669,6 +685,10 @@ enum Sim {
     var target: Int?
     var cancelled = false
     var down: Set<Int> = []
+    var startX = 0
+    var startY = 0
+    var startOffset = 0
+    var scroll: (Binding<Int>, Int)?
 
     mutating func process(_ rec: FingerRec, buttons: [PlacedNode]) -> (() -> Void)? {
       switch rec.phase {
@@ -677,24 +697,41 @@ enum Sim {
           active = true
           target = hitTest(x: rec.x, y: rec.y, buttons: buttons)
           cancelled = false
+          startX = rec.x
+          startY = rec.y
+          scroll = buttons.first(where: { node in
+            guard case .scrollview = node.spec else { return false }
+            return rec.x >= node.x && rec.x < node.x + node.w && rec.y >= node.y && rec.y < node.y + node.h
+          }).flatMap { node in
+            guard case .scrollview(let binding, let content) = node.spec else { return nil }
+            return (binding, max(0, measure(content).h - screenHeight))
+          }
+          startOffset = scroll?.0.get() ?? 0
           down = []
         }
         down.insert(rec.finger)
+        return nil
+      case .moved:
+        down.insert(rec.finger)
+        let dx = rec.x - startX
+        let dy = rec.y - startY
+        if dx * dx + dy * dy > 64, let (binding, maximum) = scroll {
+          cancelled = true
+          binding.set(min(max(startOffset - dy, 0), maximum))
+        }
         return nil
       case .ended:
         down.remove(rec.finger)
         guard active, !cancelled, down.isEmpty, let id = target,
               let node = buttons.last(where: { $0.buttonId == id }),
               rec.x >= node.x, rec.x < node.x + node.w,
-              rec.y >= node.y, rec.y < node.y + node.h else {
-          return nil
-        }
+              rec.y >= node.y, rec.y < node.y + node.h else { return nil }
         return node.action
       case .cancelled:
         down.remove(rec.finger)
         cancelled = true
         return nil
-      case .moved, .stationary:
+      case .stationary:
         down.insert(rec.finger)
         return nil
       }
@@ -705,6 +742,7 @@ enum Sim {
         active = false
         target = nil
         cancelled = false
+        scroll = nil
       }
     }
   }
