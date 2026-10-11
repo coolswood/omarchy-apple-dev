@@ -47,10 +47,11 @@ enums RN converters use. `rncc.sh` puts them before the sysroot copies.
 
 ## Legacy event shim
 
-`rn-legacy-event-shim.js` registers the legacy `RCTEventEmitter` callable JS
-module before the app runs. RN 0.87's `setUpBatchedBridge` registers seven
-callable modules and `RCTEventEmitter` is not one of them, so on the
-bridgeless iOS runtime any `RCTEvent` dispatch (touch, scroll, component
-events) throws "Module has not been registered as callable" and aborts the
-app. `rn-js.sh` uses the shim as the default entry; pass `index.js` as the
-third argument to skip it.
+`rn-legacy-event-shim.js` registers a no-op legacy `RCTEventEmitter` callable
+JS module after the app entry loads, unless the app registered its own first.
+RN 0.87's `setUpBatchedBridge` registers seven callable modules and
+`RCTEventEmitter` is not one of them. On the bridgeless iOS runtime a legacy
+`RCTEvent` dispatch (touch, scroll, component events) then throws "Module has
+not been registered as callable" and aborts the app. The no-op drops those
+events and hides the cause. `rn-js.sh` uses the shim as the default entry;
+pass `index.js` as the third argument to skip it. Not verified on a phone yet.

@@ -3,9 +3,9 @@
 # Outputs go to local disk (per Main 2026-10-09: no small-file writes to QNAP).
 #   rn-js.sh <RNProbe dir> <OUT dir> [ENTRY]
 # ENTRY defaults to rn-legacy-event-shim.js (copied from this dir into the app
-# when missing): it registers the legacy RCTEventEmitter callable JS module so
-# an RCTEvent dispatch on the bridgeless runtime does not abort the app
-# (receipts/2026-10-09-rn.md phone run). Pass index.js to skip the shim.
+# when missing). It registers a no-op legacy RCTEventEmitter callable JS module
+# after the app entry loads, unless the app registered its own. Pass index.js
+# to skip it. See the shim header; not verified on a phone yet.
 set -euo pipefail
 APP=${1:?RNProbe dir}
 OUT=${2:?local out dir}
