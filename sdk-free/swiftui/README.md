@@ -26,19 +26,19 @@ this script is the demo.
   `NavigationLink(destination:label:)`, `View.navigationTitle(_:
   LocalizedStringKey)`, `LocalizedStringKey`. Staged app:
   `SwiftUIWide2-dev.ipa`.
-- **Blocker (b)**: `NavigationStack` cannot be linked — the device's
+- **Blocker (b)**: `NavigationStack` cannot be linked: the device's
   SwiftUI/SwiftUICore stubs export zero `_$s7SwiftUI13NavigationStack`
   symbols (only internal helpers like `NavigationStackContext` appear in
   the reflection dump). Navigation bars without a host also render nothing;
   the staged app shows whether `List`/`navigationTitle` need it.
 - **Blockers (c)**, from stub/dump reads, not attempted in code beyond the
   existing `State`/`Binding` stubs:
-  `@Binding` is blocked — `State.projectedValue` (the `$state` getter that
+  `@Binding` is blocked: `State.projectedValue` (the `$state` getter that
   yields `Binding<Value>`) has no exported symbol, and `Binding` exports no
   plain `init(wrappedValue:)`/`init(projectedValue:)` (only converter inits
   like `Binding<V>? -> Binding<V>` and `Binding<V> -> Binding<Double?>`),
   so a client cannot obtain a `Binding` from `@State` at all.
-  `@Environment` is blocked — the public `Environment<Value>` wrapper has no
+  `@Environment` is blocked: the public `Environment<Value>` wrapper has no
   exported `init(_: KeyPath<EnvironmentValues, Value>)` symbol (the only
   `11Environment` matches are the internal
   `ViewRendererConfiguration.Environment`); `EnvironmentValues` itself is
@@ -99,7 +99,7 @@ metadata. Check any new type's size with `MemoryLayout` against the device layou
 3. Probe the size: add a `take(MemoryLayout<T>.size)` line to
    `sdk-free/swiftui/layout-probe.swift`, build it with
    `swiftui-build.sh`, and read the immediate stores out of
-   `llvm-objdump -d` of the linked probe — -O folds them into constants in
+   `llvm-objdump -d` of the linked probe: -O folds them into constants in
    `main`. Compare with the field count/types from step 1.
 4. Build the app with `swiftui-build.sh`: `SwiftUI symbols checked,
    missing 0` is the signature gate; a MISS line names the exact mangled

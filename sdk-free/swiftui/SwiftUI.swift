@@ -153,7 +153,7 @@ public struct Binding<Value> {
 }
 
 // Device layout (iOS 27.0.1 SwiftUICore reflection dump): Color
-// { provider: AnyColorBox } — one word, a class reference; Color, Font and
+// { provider: AnyColorBox }: one word, a class reference; Color, Font and
 // Image are @frozen in the OSS interface and the device dump fields match,
 // so each passes in a single register. A resilient-empty Color here would
 // make clients pass an empty value where the device init reads a register.
@@ -167,7 +167,7 @@ public struct Binding<Value> {
   public static var primary: Color { fatalError() }
 }
 
-// Device layout: Font { provider: AnyFontBox } — one word. The statics below
+// Device layout: Font { provider: AnyFontBox }: one word. The statics below
 // are plain getters the device exports (Font.largeTitle etc.); no default
 // arguments: the device exports no default-argument generators for these.
 @frozen public struct Font {
@@ -178,7 +178,7 @@ public struct Binding<Value> {
   public static var body: Font { fatalError() }
 }
 
-// Device layout: Image { provider: AnyImageProviderBox } — one word.
+// Device layout: Image { provider: AnyImageProviderBox }: one word.
 // Image(systemName:) is the device init _$s7SwiftUI5ImageV10systemNameACSS_tcfC.
 @frozen public struct Image: View {
   public var provider: AnyObject
