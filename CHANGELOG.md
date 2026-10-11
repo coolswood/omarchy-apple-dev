@@ -25,7 +25,7 @@
 
 - Seven phone launches with no debugger ended in the same abort. The five crash reports show an abort within one second of launch. The Hermes bundle loaded and ran. See `receipts/2026-10-11-rnprobe-launch.md`.
 - React Native reported: "Failed to call into JavaScript module method RCTEventEmitter.receiveEvent(). Module has not been registered as callable." The cause is unknown.
-- With a debugger attached from launch, the app stayed running for 220 seconds. Nobody checked the screen.
+- With a debugger attached from launch, the app was still running after 220 seconds. Nobody checked the screen.
 
 ### Documentation
 
@@ -37,4 +37,4 @@
 
 First tagged release of omarchy-apple-dev. It added Linux builds for iOS apps without Xcode. It added a portable toolchain, resource tools, project setup, Flutter support, and macOS builds. The release included app and device-run records. The first tag set a baseline.
 
-Five of five files matched the same Xcode output in each of three metadata tests. Other parts have device records. No offline test suite covers them.
+Five of five files matched the same Xcode output in each of three metadata tests. Some other parts have device records and no offline test suite.
