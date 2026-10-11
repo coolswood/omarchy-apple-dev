@@ -76,6 +76,16 @@ demorects=$(probe_rects simview-demo)
 [ -n "$m3rects" ] && [ -n "$demorects" ] || { echo "FAIL probe printed no rects"; exit 1; }
 log "$m3rects" | sed 's/^/ok   m3app rect /'
 log "$demorects" | sed 's/^/ok   demo rect /'
+# The m3app stack is Text("taps: 0") h=9, 16, Button#1 "tap 0" h=9, 16,
+# Button#2 "never" h=7: total 57, so y0 = (844-57)/2 = 393 and the buttons
+# sit at 393+9+16=418 and 418+9+16=443. A regression that loses the
+# configured spacing between flattened children moves them and fails here.
+if [ "$m3rects" = "$(printf '180 418 29 9\n180 443 29 7')" ]; then
+  log "ok   m3app rects match the documented layout arithmetic"
+else
+  log "FAIL m3app rects do not match the documented layout"
+  fail=1
+fi
 
 echo "== row 0: demo app tap"
 rect_center "$(log "$demorects" | sed -n 1p)"
@@ -280,8 +290,12 @@ nestrects=$(probe_rects nestedapp)
 rect_center "$(log "$nestrects" | sed -n 1p)"
 write_tap "$bh/row9.json" "$cx" "$cy" 0
 run "$P/nestedapp" --frames "$b/row9.json" --out "$b/row9.png" >"$bh/row9.log" 2>&1
-if [ $? -eq 0 ] && grep -q 'state=taps:1,rounds:0' "$bh/row9.log"; then
+rc=$?
+run "$P/nestedapp" --out "$b/row9-before.png" >/dev/null
+if [ $rc -eq 0 ] && grep -q 'state=taps:1,rounds:0' "$bh/row9.log" \
+  && ! python3 "$here/compare.py" "$bh/row9.png" "$bh/row9-before.png" >/dev/null 2>&1; then
   log "ok   child button state kept its box across the rebuild"
+  log "ok   re-render differs from the no-tap render"
 else
   log "FAIL row 9"; cat "$bh/row9.log"; fail=1
 fi
