@@ -233,9 +233,13 @@ push and pop; the render after back is byte-identical to the root golden;
 `simview/test-m4.sh` runs the rows of `simview/TESTS-M4.md` plus five
 mutation checks, each proven in-suite against a changed build. The
 stand-ins table rows above (name registry, app data folder, locale, TLS)
-are not reachable by an app built on our own SwiftUI module — the module
-calls no system service — so this rung landed the exit demo only; those
-rows stay listed for Route A.
+are not reachable by an app built on our own SwiftUI module. The module
+calls no system service. This rung therefore landed the exit demo only, and
+those rows stay listed for Route A.
+`NavigationStack` is our own type on Linux. On the unmerged `swiftui-wide`
+branch, the symbol check found no `NavigationStack` symbols in the phone's
+SwiftUI stubs on iOS 27.0.1. `NavDemo` therefore has not been built for the
+phone, and we expect it would not link as written.
 - Cannot prove (M4 additions): UINavigationController parity, interactive
   gesture pop, large titles, scroll-edge bar effects, a detail whose state
   survives pop and re-push (pooled boxes continue from the old value; real
