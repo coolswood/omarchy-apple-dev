@@ -1,0 +1,28 @@
+# M3 test expectations
+
+Written before the M3 code, per `docs/SIM-INPUT-MODEL.md`. `simview/test-m3.sh`
+checks each row. It fails if a row does not match. One app drives the rows:
+`m3app`, built from `simview/Sources/M3App/M3App.swift`. It has two buttons.
+Button#1 shows the state in its label, so a tap changes pixels inside the
+button box. The demo app `simview-demo` also gets one tap check, because its
+source must stay unchanged and it must keep working.
+
+The runner prints each button rect as `button id=N rect=x,y,w,h` before the
+frame log. The tests read tap points from those rects. No test hard codes a
+layout offset.
+
+Tolerances, stated here: log comparison is exact bytes. PNG comparison is
+`simview/compare.py`: 0 differing pixels, 0 per-channel difference.
+
+| # | Row | Input | Expected |
+|---|-----|-------|----------|
+| 0 | Demo app tap | `simview-demo --frames tap.json --out after.png`, tap at the Button#1 rect center | Exit 0. Log has `target=Button#1` and `state=count:1`. Log line shape is `t=<t> finger=<n> <phase> (<x>,<y>) target=<t> state=<s> render=ok`. |
+| 1 | Tap inside a button | `m3app`, tap at Button#1 center, `--out after.png`; no-tap render to `before.png` first | Exit 0. The `ended` log line shows `state=count:1`. No line shows any other count value, so the action ran once. `before.png` and `after.png` differ inside the Button#1 rect. |
+| 2 | Press inside, move out, lift outside | frames: `began` at Button#1 center, `moved` 60 points left, `ended` there | Exit 0. All three lines name `target=Button#1`: the target is fixed at touch down. Every line shows `state=count:0`. No action. |
+| 3 | Out and back, lift inside | frames: `began` at center, `moved` out, `moved` back to center, `ended` at center | Exit 0. The `ended` line shows `state=count:1`. No line shows any other count value. One action. |
+| 4 | Drag across a second button | frames: `began` on Button#1, `moved` to Button#2 center, `ended` there | Exit 0. Every line names `target=Button#1`, never Button#2. Every line shows `state=count:0`. No action on either button. |
+| 5 | Tap on empty space | frames: `began` and `ended` at (30, 30) | Exit 0. Both lines say `target=none`. Both show `state=count:0`. |
+| 6 | Two fingers, one lifts | frames: two fingers `began`; one `ended` plus one `stationary`; one `stationary`; last `ended` | Exit 0. The lift frame logs two lines: `finger=0 ended` and `finger=1 stationary`. The next frame logs one line. The last frame logs one line. |
+| 7 | Frames out of time order | frames with `t_ms` 400 then 200 | Exit code nonzero. No PNG written. The error on stderr names the frame index and both times. |
+| 8 | Same file twice | row 1 frames, two runs | Exit 0 twice. The two logs are identical bytes. The two PNGs are identical bytes. |
+| N | Negative control | row 1 checker fed the row 5 no-action log | The checker must fail, so the suite can detect a lost action. |
