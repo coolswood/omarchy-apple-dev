@@ -44,9 +44,12 @@ rect_center() {  # $1 = rects line; sets cx cy
   cy=$((ry + rh / 2))
 }
 
-# Log shape: every t= line must match the documented line.
+# Log shape: at least one t= line, and every t= line matches the documented
+# line. The state field may contain spaces (an array of two builders prints
+# ", " inside itself).
 shape_ok() {  # $1 = log file
-  ! grep '^t=' "$1" | grep -qvE '^t=[0-9]+ finger=[0-9] (began|moved|ended|cancelled|stationary) \(-?[0-9]+,-?[0-9]+\) target=(Button#[0-9]+|none) state=.+ render=ok$'
+  grep -q '^t=' "$1" \
+    && ! grep '^t=' "$1" | grep -qvE '^t=[0-9]+ finger=[0-9] (began|moved|ended|cancelled|stationary) \(-?[0-9]+,-?[0-9]+\) target=(Button#[0-9]+|none) state=.+ render=ok$'
 }
 
 # At least one differing pixel, and every differing pixel inside the rect.
@@ -56,8 +59,11 @@ import sys
 
 from compare import read_png
 
-(_, _), a = read_png(sys.argv[1])
-(_, _), b = read_png(sys.argv[2])
+da, a = read_png(sys.argv[1])
+db, b = read_png(sys.argv[2])
+if da != (390, 844) or db != (390, 844):
+    print(f"FAIL sizes {da} and {db}, want (390, 844)")
+    sys.exit(1)
 x, y, w, h = (int(v) for v in sys.argv[3:7])
 outside = 0
 inside = 0
@@ -78,29 +84,42 @@ sys.exit(1)
 EOF
 }
 
+tlines() {  # $1 = log; prints its t= lines
+  grep '^t=' "$1"
+}
 check_row0() {  # $1 = log (unused), $2 = png
   python3 "$here/compare.py" "$2" "$here/golden/nav-root.png" >/dev/null
 }
 check_row1() {  # $1 = log, $2 = png
   shape_ok "$1" \
-    && grep -q '^t=80 finger=0 ended .* target=Button#1 ' "$1" \
+    && [ "$(tlines "$1" | wc -l)" -eq 2 ] \
+    && grep -q '^t=0 finger=0 began .* target=Button#1 state=path:\[\],' "$1" \
+    && grep -q '^t=80 finger=0 ended .* target=Button#1 state=path:\[(Function)\],' "$1" \
     && python3 "$here/compare.py" "$2" "$here/golden/nav-one.png" >/dev/null
 }
 check_row2() {  # $1 = log, $2 = png
   shape_ok "$1" \
+    && [ "$(tlines "$1" | wc -l)" -eq 4 ] \
+    && grep -q '^t=0 finger=0 began .* target=Button#1 state=path:\[\],' "$1" \
+    && grep -q '^t=80 finger=0 ended .* target=Button#1 .*taps:0' "$1" \
+    && grep -q '^t=160 finger=0 began .* target=Button#2 .*taps:0' "$1" \
     && grep -q '^t=240 finger=0 ended .*target=Button#2 .*taps:1' "$1" \
     && inbox_check "$2" "$here/golden/nav-one.png" 174 426 41 9 >/dev/null
 }
 check_row3() {  # $1 = log, $2 = png
   shape_ok "$1" \
+    && [ "$(tlines "$1" | wc -l)" -eq 6 ] \
+    && grep -q '^t=80 finger=0 ended .* target=Button#1 ' "$1" \
     && grep -q '^t=240 finger=0 ended .* target=Button#3 ' "$1" \
-    && grep -q '^t=400 finger=0 ended .* target=Button#1 ' "$1" \
+    && grep -q '^t=400 finger=0 ended .* target=Button#1 state=path:\[(Function)\],' "$1" \
     && python3 "$here/compare.py" "$2" "$here/golden/nav-one.png" >/dev/null \
     && ! python3 "$here/compare.py" "$2" "$here/golden/nav-root.png" >/dev/null
 }
 check_row4() {  # $1 = log, $2 = png
   shape_ok "$1" \
+    && [ "$(tlines "$1" | wc -l)" -eq 4 ] \
     && [ "$(grep -c 'target=none' "$1")" -eq 2 ] \
+    && grep -q '^t=80 finger=0 ended .* target=Button#1 ' "$1" \
     && python3 "$here/compare.py" "$2" "$here/golden/nav-one.png" >/dev/null
 }
 
