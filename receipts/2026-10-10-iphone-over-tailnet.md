@@ -59,9 +59,10 @@ Cable out, Wi-Fi on, from the M1 Max laptop (Swift 6.4 lldb, no on-disk device s
   without `--suspended`, failed with code 10002. The app was not left running (`proclist` empty, `pkill` run). Earlier
   runs, with the phone locked but the lock screen showing, launched fine. We left the phone as it was, so we do not know whether that is the cause.
 - Lead for the breakpoint, not tested: the first sysroot-less run printed "Executable binary changed from <local path>
-  to /private/var/containers/...". The USB flow in `device-run.sh` avoids this with
-  `target.module[0].SetPlatformFileSpec(<remote path>)`; the tailnet script did not use it. The script now does, and
-  the next run will show whether that makes the breakpoint stop.
+  to /private/var/containers/...". The USB flow avoids this with
+  `target.module[0].SetPlatformFileSpec(<remote path>)` (`device-run.sh`, in `lldb_session`). The throwaway test script
+  we ran these tests with is not in the repo, and it did not make that call. The next run will add it and show whether
+  the breakpoint then stops.
 - After every run the app was killed, the forwarder and tunnel were stopped, and `proclist` showed no app or debugserver
   left on the phone.
 
