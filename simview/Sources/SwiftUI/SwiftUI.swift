@@ -515,13 +515,22 @@ enum Sim {
   // tree; the app carries any @State declared on the App struct.
   static func stateDescription(_ roots: [Any]) -> String {
     var parts: [String] = []
+    var seen: Set<ObjectIdentifier> = []
     for root in roots {
-      collectState(root, into: &parts)
+      collectState(root, into: &parts, seen: &seen)
     }
     return parts.joined(separator: ",")
   }
 
-  static func collectState(_ value: Any, into parts: inout [String]) {
+  static func collectState(_ value: Any, into parts: inout [String],
+                           seen: inout Set<ObjectIdentifier>) {
+    // Only class instances can form reference cycles. Mirror boxing makes
+    // `as? AnyObject` succeed for every value, so the display style decides.
+    if Mirror(reflecting: value).displayStyle == .class,
+       let object = value as? AnyObject,
+       !seen.insert(ObjectIdentifier(object)).inserted {
+      return
+    }
     for child in Mirror(reflecting: value).children {
       if let label = child.label, label.hasPrefix("_"),
          let box = Mirror(reflecting: child.value).children.first?.value,
@@ -530,7 +539,7 @@ enum Sim {
         continue
       }
       if !Mirror(reflecting: child.value).children.isEmpty {
-        collectState(child.value, into: &parts)
+        collectState(child.value, into: &parts, seen: &seen)
       }
     }
   }

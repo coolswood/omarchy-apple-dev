@@ -8,6 +8,8 @@ import SwiftUI
 @main
 struct NestedApp: App {
   @State private var rounds = 0
+  // A self-referencing object on purpose: the state walk must survive it.
+  let loop = Chain()
   var body: some Scene {
     WindowGroup {
       VStack(alignment: .center, spacing: 16) {
@@ -17,6 +19,11 @@ struct NestedApp: App {
       }
     }
   }
+}
+
+final class Chain {
+  var next: Chain?
+  init() { next = self }
 }
 
 struct CounterView: View {
