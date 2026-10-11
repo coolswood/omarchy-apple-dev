@@ -103,7 +103,7 @@ check_row2() {  # $1 = log, $2 = png
     && grep -q '^t=0 finger=0 began .* target=Button#1 state=path:\[\],' "$1" \
     && grep -q '^t=80 finger=0 ended .* target=Button#1 .*taps:0' "$1" \
     && grep -q '^t=160 finger=0 began .* target=Button#2 .*taps:0' "$1" \
-    && grep -q '^t=240 finger=0 ended .*target=Button#2 .*taps:1' "$1" \
+    && grep -q '^t=240 finger=0 ended .*target=Button#2 state=path:\[(Function)\],taps:1,taps:0 render=ok$' "$1" \
     && inbox_check "$2" "$here/golden/nav-one.png" 174 426 41 9 >/dev/null
 }
 check_row3() {  # $1 = log, $2 = png
