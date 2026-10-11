@@ -44,3 +44,13 @@ written for this repo (no SDK files): variadic `NS_ENUM` (RN 0.87 headers use
 anonymous `NS_ENUM(NSInteger){...}`), `NSProxy`/`NSAssertionHandler` stubs,
 `CATransform3D`, `CADisplayLink`, geometry inline functions, and the text
 enums RN converters use. `rncc.sh` puts them before the sysroot copies.
+
+## Legacy event shim
+
+`rn-legacy-event-shim.js` registers the legacy `RCTEventEmitter` callable JS
+module before the app runs. RN 0.87's `setUpBatchedBridge` registers seven
+callable modules and `RCTEventEmitter` is not one of them, so on the
+bridgeless iOS runtime any `RCTEvent` dispatch (touch, scroll, component
+events) throws "Module has not been registered as callable" and aborts the
+app. `rn-js.sh` uses the shim as the default entry; pass `index.js` as the
+third argument to skip it.

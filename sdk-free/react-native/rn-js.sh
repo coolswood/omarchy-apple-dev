@@ -1,16 +1,25 @@
 #!/usr/bin/env bash
 # Host side: bundle JS with Metro, compile to Hermes bytecode, run RN codegen.
 # Outputs go to local disk (per Main 2026-10-09: no small-file writes to QNAP).
-#   rn-js.sh <RNProbe dir> <OUT dir>
+#   rn-js.sh <RNProbe dir> <OUT dir> [ENTRY]
+# ENTRY defaults to rn-legacy-event-shim.js (copied from this dir into the app
+# when missing): it registers the legacy RCTEventEmitter callable JS module so
+# an RCTEvent dispatch on the bridgeless runtime does not abort the app
+# (receipts/2026-10-09-rn.md phone run). Pass index.js to skip the shim.
 set -euo pipefail
 APP=${1:?RNProbe dir}
 OUT=${2:?local out dir}
+ENTRY=${3:-rn-legacy-event-shim.js}
+HERE=$(cd "$(dirname "$0")" && pwd)
+if [ "$ENTRY" != "index.js" ] && [ ! -f "$APP/$ENTRY" ] && [ -f "$HERE/$ENTRY" ]; then
+  ionice -c3 nice -n 19 cp "$HERE/$ENTRY" "$APP/$ENTRY"
+fi
 mkdir -p "$OUT"
 cd "$APP"
 
 echo "== metro bundle"
 ionice -c3 nice -n 19 npx react-native bundle \
-  --platform ios --dev false --entry-file index.js \
+  --platform ios --dev false --entry-file "$ENTRY" \
   --bundle-output "$OUT/main.jsbundle" \
   --assets-dest "$OUT/assets" 2>&1 | tail -3
 
@@ -20,5 +29,5 @@ HERMESC=${HERMESC:-/mnt/qnap-public/omp-studio-offload/apple-dev/flutter-work/rn
 
 echo "== codegen"
 ionice -c3 nice -n 19 node node_modules/react-native/scripts/generate-codegen-artifacts.js \
-  -p . -o "$OUT/codegen" --platform ios 2>&1 | tail -3
+  -p . -t ios -o "$OUT/codegen" 2>&1 | tail -3
 echo done
