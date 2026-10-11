@@ -34,7 +34,8 @@ def _paeth(a: int, b: int, c: int) -> int:
 
 def read_png(path: str):
     """Return ((width, height), pixels) for an 8-bit RGBA PNG."""
-    data = open(path, "rb").read()
+    with open(path, "rb") as f:
+        data = f.read()
     if data[:8] != b"\x89PNG\r\n\x1a\n":
         fail(f"{path}: not a PNG file")
     pos = 8
@@ -52,6 +53,8 @@ def read_png(path: str):
         elif ctype == b"IEND":
             break
         pos += 12 + length
+    if size is None:
+        fail(f"{path}: missing IHDR chunk")
     width, height, depth, color = size
     if depth != 8 or color != 6:
         fail(f"{path}: depth {depth} color type {color}, want 8 and 6")
