@@ -81,6 +81,28 @@ The second app, `m3app`, carries two buttons for the drag-across row. The
 third app, `nestedapp`, carries a child view with its own `@State` and a
 state on the App struct. Their sources live under `simview/Sources/`.
 
+## Milestone M4: navigation
+
+M4 lands the exit demo of the ladder's fourth rung: the app's own SwiftUI
+code draws its first screen, a scripted tap navigates one level, a
+screenshot is saved, the app exits cleanly. The module gains
+`NavigationStack`, `NavigationLink`, `List`, and `navigationTitle`. A
+navigation bar draws the screen title, a back button whose hit area is its
+label rect, and a separator at the bar's bottom edge; content centers in
+the area below. `List` lays rows as a leading stack with a separator line
+after each row. `NavigationStack` rewrites `.link` nodes into buttons that
+push the destination's builder, so the top screen is rebuilt every pass and
+destination `@State` keeps its pooled box; the back button pops one level.
+
+The `navdemo` app (`simview/Sources/NavDemo/NavDemo.swift`, app-style
+SwiftUI only) shows a two-row list; row one pushes a detail with its own
+`@State` and a `deeper` link; row two pushes the same detail labeled `two`.
+`simview/test-m4.sh` runs the rows of `simview/TESTS-M4.md`: root and
+pushed renders against goldens (`golden/nav-root.png`,
+`golden/nav-one.png`, `golden/nav-two.png`), the back render byte-identical
+to root, the back hit area, determinism, and five mutation checks, each
+proven in-suite against a changed build.
+
 ## Limits
 
 This is not real SwiftUI layout, fonts, animation, or Metal. It proves nothing

@@ -220,6 +220,27 @@ outputs: `../receipts/2026-10-11-simview-m3.md`. All eight spec rows pass in
 - Cannot prove: parity with a real device (fonts, animation curves, system services such
   as push, camera, Keychain), App Store apps, performance numbers.
 
+Landed on branch `simview-m4`, exit-demo scope
+([receipt](../receipts/2026-10-11-simview-m4.md)). The module gained the
+vocabulary the demo needs: `NavigationStack`, `NavigationLink`, `List`,
+`navigationTitle`. The navigation bar draws its title, a back button whose
+hit area is its label rect, and a separator line; list rows lay out as a
+leading stack with a separator after each row. The `NavDemo` app
+(`simview/Sources/NavDemo/NavDemo.swift`, app-style SwiftUI only) draws a
+two-row list, pushes a per-row detail screen that owns `@State`, pushes a
+third screen, and pops one level per back tap. Observed: scripted frames
+push and pop; the render after back is byte-identical to the root golden;
+`simview/test-m4.sh` runs the rows of `simview/TESTS-M4.md` plus five
+mutation checks, each proven in-suite against a changed build. The
+stand-ins table rows above (name registry, app data folder, locale, TLS)
+are not reachable by an app built on our own SwiftUI module — the module
+calls no system service — so this rung landed the exit demo only; those
+rows stay listed for Route A.
+- Cannot prove (M4 additions): UINavigationController parity, interactive
+  gesture pop, large titles, scroll-edge bar effects, a detail whose state
+  survives pop and re-push (pooled boxes continue from the old value; real
+  iOS resets), more than one `NavigationStack`, or a link outside a stack.
+
 ## Standing rules
 
 - This project adds Linux-only checks. It does not replace the fallback ladder in
