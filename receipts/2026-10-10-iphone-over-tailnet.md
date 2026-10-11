@@ -75,7 +75,7 @@ Cable out, Wi-Fi on, from the M1 Max laptop (Swift 6.4 lldb, no on-disk device s
   1: name = 'main', locations = 1, resolved = 1, hit count = 1
   ```
   The run took 3 min 53 s from the first probe to the end. `process detach` printed `Process 259 detached`, and the app
-  was then killed. Retry 1 and retry 2 differ only in the wait time, so the wait is shown to matter. The platform file
+  was then killed. Retry 1 and retry 2 differ in the wait time and the command timeouts set to match it, so the wait is shown to matter. The platform file
   spec was in both runs, so its own effect is not isolated.
 - A RNProbe launch check ran right after retry 2 and failed to launch (no pid, empty output). The screen may have gone
   off during the four minutes. We did not check, and we did not look at any screenshot.

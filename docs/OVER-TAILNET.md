@@ -98,18 +98,20 @@ Process 259 stopped
 1: name = 'main', locations = 1, resolved = 1, hit count = 1
 ```
 
-Three things made it work.
+Three things were in place when the stop appeared.
 
 1. The sysroot above.
 2. `target.module[0].SetPlatformFileSpec(<remote path>)`, the same step `device-run.sh` uses in `lldb_session`. Read the
    remote path from `pymobiledevice3 apps list --rsd ADDR PORT`. Without it lldb replaces the local binary with the remote
    one.
-3. A long wait. The process first goes through many dyld image-load stops, and each one costs round trips over the
-   tunnel. A 40 second wait ended before `main`. A 220 second wait reached it. The whole run, from launch to detach,
-   took under four minutes.
+3. A 220 second wait for the stop. Retry 1 used a 40 second wait. It inserted the breakpoint and ended while lldb was
+   still handling dyld image-load stops, before `main`. Its packet log shows debugserver answered
+   `{"results":["OK","OK"]}` to the batch insert that held `Z0,104ad0444,4`, the address of `main`.
 
-We did not test step 2 alone with a long wait, so we cannot say how much it adds. The run order was: launch suspended,
-forward debugserver, `platform select remote-ios --sysroot`, `target create`, `SetPlatformFileSpec`, `process connect`,
+Of these three, only the wait was varied between the two retries (40 s ended before `main`, 220 s reached it). Both
+retries had the sysroot and the file spec. We did not test the sysroot or the file spec alone. The whole run, from the
+first probe to the end, took 3 min 53 s. The run order was: launch suspended, forward debugserver,
+`platform select remote-ios --sysroot`, `target create`, `SetPlatformFileSpec`, `process connect`,
 `process attach`, `breakpoint set -n main`, `continue`, wait for the stop. A stop at a breakpoint on a screen-off phone
 is untested, because launch fails there (see the table above).
 
