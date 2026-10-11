@@ -1,0 +1,30 @@
+#!/usr/bin/env bash
+# Build the simview module and the SwiftUI demo app with it.
+# Uses native swiftc when present; otherwise runs every command through the
+# chroot wrapper named by SIMVIEW_CHROOT_RUN, which must bind this checkout
+# at /work (see simview/README.md).
+set -euo pipefail
+here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
+
+P=$here
+if command -v swiftc >/dev/null 2>&1; then
+  run() { "$@"; }
+elif [ -n "${SIMVIEW_CHROOT_RUN:-}" ]; then
+  P=/work
+  run() { "$SIMVIEW_CHROOT_RUN" --user "$*"; }
+else
+  echo "SKIP  simview build: no swiftc and no SIMVIEW_CHROOT_RUN wrapper" >&2
+  exit 1
+fi
+
+b=$P/simview/build
+mkdir -p "$here/build"
+
+run swiftc -swift-version 5 -parse-as-library -c -module-name SwiftUI \
+  -emit-module-path "$b/SwiftUI.swiftmodule" \
+  -o "$b/SwiftUI.o" \
+  "$P/simview/Sources/SwiftUI/SwiftUI.swift"
+run swiftc -swift-version 5 -parse-as-library -I "$b" \
+  -o "$P/simview-demo" \
+  "$b/SwiftUI.o" "$P/sdk-free/swiftui/HelloApp.swift"
+echo "built $P/simview-demo"

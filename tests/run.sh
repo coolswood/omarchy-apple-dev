@@ -28,6 +28,9 @@ bash tests/ibtool/check-golden.sh || fail=1
 echo "== tests/install-mode.sh"
 bash tests/install-mode.sh || fail=1
 
+echo "== simview/test.sh"
+bash simview/test.sh || fail=1
+
 echo "== tests/ibtool/compile-golden.sh"
 if command -v xcrun >/dev/null 2>&1; then
   # Regenerates the golden corpus with Apple's ibtool; needs a Mac with Xcode.

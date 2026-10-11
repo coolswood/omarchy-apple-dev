@@ -179,6 +179,18 @@ also run natively on arm64 Linux
   Metal or GPU numbers. It proves our draw path and our view vocabulary, nothing about
   Apple's renderer.
 
+Landed on branch `simview-m2`
+([receipt](../receipts/2026-10-11-simview-m2.md)). The demo app
+`sdk-free/swiftui/HelloApp.swift` compiles unchanged on Linux against our own
+`SwiftUI` module in `simview/Sources/SwiftUI/`. The module builds the render
+tree with result builders, measures in points, and draws into a 390 x 844 RGBA
+buffer, one pixel per point. The PNG encoder, its CRC32 and Adler32 checks, and
+a hand-drawn 5 x 7 bitmap font are all our own code. Observed: `file` reports
+`PNG image data, 390 x 844`; two renders give identical bytes; the render
+matches `simview/golden/demo1.png` with 0 differing pixels under the tolerance
+stated in `simview/compare.py`; a changed initial state fails that compare.
+`simview/test.sh` runs these checks, and `tests/run.sh` calls it.
+
 ### M3 — touch input mapping
 
 The frame format, the rules and the test list for this rung are in [SIM-INPUT-MODEL.md](SIM-INPUT-MODEL.md).
