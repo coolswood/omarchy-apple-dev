@@ -17,7 +17,7 @@ install script as a fresh user (FINDINGS.md item 22).
 | xtool | 1.20.1 + 4 fixes (xtool-org/xtool#290-#293) | built from source by the installer |
 | pymobiledevice3 | latest from PyPI at install time | venv |
 | LLDB | 21.0.0 (Swift toolchain) | bundled with `swift-bin` |
-| iOS SDK | iPhoneOS 27.0 | Xcode 27.0 |
+| iOS SDK | iPhoneOS 27.0 | Xcode 27.0 (full mode); in no-Xcode mode, link stubs cut from Apple's public iOS update |
 
 The device install and the LLDB loop were proven on 2026-09-09 on an M1. That
 run used Swift 6.3.3, xtool 1.19.0 and the iOS 26.5 SDK. It has not been re-run
@@ -93,6 +93,12 @@ What has run on an iPhone and what only builds is in
 [docs/TEST-MATRIX.md](docs/TEST-MATRIX.md).
 
 ## What you need (full mode)
+
+No Xcode download is needed in no-Xcode mode. Use `--mode no-xcode` and skip this section. That mode needs a Linux box,
+an iPhone to run the apps, an Apple ID for signing, and about 7 GB of temporary disk during setup. The table above has
+the details.
+
+For full mode:
 
 - An Apple Silicon or x86_64 Linux box running Omarchy (Arch-based). Both
   architectures are covered. AUR `swift-bin` ships aarch64 and x86_64, and the
