@@ -27,4 +27,7 @@ run swiftc -swift-version 5 -parse-as-library -c -module-name SwiftUI \
 run swiftc -swift-version 5 -parse-as-library -I "$b" \
   -o "$P/simview-demo" \
   "$b/SwiftUI.o" "$P/sdk-free/swiftui/HelloApp.swift"
-echo "built $P/simview-demo"
+run swiftc -swift-version 5 -parse-as-library -I "$b" \
+  -o "$P/m3app" \
+  "$b/SwiftUI.o" "$P/simview/Sources/M3App/M3App.swift"
+echo "built $P/simview-demo and $P/m3app"

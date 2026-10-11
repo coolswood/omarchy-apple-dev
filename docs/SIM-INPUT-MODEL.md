@@ -1,6 +1,8 @@
 # Input model for the Linux simulation (M3 spec)
 
-Date: 2026-10-11. Status: spec. No input code exists yet.
+Date: 2026-10-11. Status: implemented at M3. The frame loader, the touch
+rules, and the state to render loop live in `simview/Sources/SwiftUI/`.
+Receipt: `../receipts/2026-10-11-simview-m3.md`.
 
 This page fixes what a touch or key event is in our Linux simulation, and which rules the M3 tests check.
 It belongs to [IOS-SIMULATION-LINUX.md](IOS-SIMULATION-LINUX.md), rung M3.
@@ -77,7 +79,14 @@ M3 takes frames from a file, with no window. A tap is two frames. A two-finger f
 
 A short form `{"tap": [195, 420]}` expands to the first two frames above, 80 ms apart.
 
-Each frame writes one log line for each finger record: `t=80 finger=0 ended (195,420) target=Button#1 state=count:1 render=ok`.
+Each frame writes one log line for each finger record. This line is what the
+demo app prints when the first tap above lands on its button, whose rect the
+runner reports as 177,430,35,9:
+
+`t=80 finger=0 ended (194,434) target=Button#1 state=count:1 render=ok`
+
+Coordinates come from the scene, so tests read tap points from the printed
+rects instead of hard coding them.
 
 ## M3 tests
 
@@ -93,6 +102,14 @@ Each test runs on Linux with no device. The expected result is written before th
 | Two fingers down, one lifts | The frame of the lift lists both fingers: one `ended`, one `stationary`. The next frame lists only the finger still down. |
 | Frames out of time order | The runner refuses the file and names the line. |
 | Same file twice | The same log and the same pixels. |
+
+Status after M3 (2026-10-11): all eight rows pass. `simview/test-m3.sh` runs
+them; the expected result of each row, and the tolerances, are in
+`simview/TESTS-M3.md`, which was committed before the input code. Two notes:
+the tap-inside row runs on `m3app`, whose button label carries the state, so
+the changed pixels sit inside the button box; the demo button label is
+static. The out-of-order row is refused by index, which this page allows in
+place of a line number.
 
 ## What this cannot prove
 

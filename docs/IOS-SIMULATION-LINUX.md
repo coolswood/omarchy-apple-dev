@@ -195,15 +195,14 @@ stated in `simview/compare.py`; a changed initial state fails that compare.
 
 The frame format, the rules and the test list for this rung are in [SIM-INPUT-MODEL.md](SIM-INPUT-MODEL.md).
 
-- Entry checks: M2 renders in a loop from a state struct; touches arrive first as scripted
-  frames (a JSON file, see the spec); a window is optional, not required.
-- Exit demo (expected shape):
-  ```
-  $ ./simview demo1.swift --frames frames.json --out after.png
-  ```
-  The tap lands on a button hit area, the state changes, the re-render shows it (the
-  button region differs from the no-tap render), and a log line records
-  tap -> state change -> re-render.
+Landed on branch `simview-m3`. `./simview-demo --frames frames.json --out
+after.png` validates the file, walks the frames, fires button actions under
+the touch rules, and re-renders from `@State` after every frame. A tap of the
+demo app fires once (`state=count:1` on the ended record), and 19 pixels
+differ from the no-tap render, the count glyph. Receipt with commands and
+outputs: `../receipts/2026-10-11-simview-m3.md`. All eight spec rows pass in
+`simview/test-m3.sh`, with the expected results in `simview/TESTS-M3.md`.
+
 - Cannot prove: iOS gesture recognizers, full multi-touch gestures (pinch, rotate, scroll with fling), timing feel,
   iOS hit-testing edge rules. It proves our frame format, our hit-testing and the state -> render loop.
 

@@ -41,9 +41,42 @@ checkout. Then run the same three commands:
 SIMVIEW_CHROOT_RUN=$HOME/scratch/apple-dev/simview/archrun.sh simview/test.sh
 ```
 
+## Milestone M3: scripted touch frames
+
+M3 adds the input loop of `docs/SIM-INPUT-MODEL.md`. The demo binary gains
+`--frames`:
+
+```sh
+./simview-demo --frames frames.json --out after.png
+```
+
+The file holds frames of finger records, or the short form
+`{"tap": [x, y]}`, which expands to a began frame and an ended frame 80 ms
+apart. The loader refuses out-of-order `t_ms` and names the frame index. The
+runner prints each button rect, then one log line per finger record:
+
+```
+button id=1 rect=177,430,35,9
+t=0 finger=0 began (194,434) target=Button#1 state=count:0 render=ok
+t=80 finger=0 ended (194,434) target=Button#1 state=count:1 render=ok
+```
+
+The rules: coordinates are scene points, one pixel per point. The topmost
+element under the first finger at `began` owns the whole touch, and keeps it
+when the finger leaves. The action fires only when the last finger ends
+inside that target. A `cancelled` finger kills the touch. Every frame ends
+with a re-render from the current `@State` values, so a fired action shows in
+the final PNG. `@State` stores its value in a reference cell, so copies of a
+view share one box and the action closure writes what the next render reads.
+
+`simview/test-m3.sh` runs the eight rows of the spec, the demo tap, the
+negative control, and the determinism check. Expected results, written
+before the code: `simview/TESTS-M3.md`. The second app, `m3app`, carries two
+buttons for the drag-across row. Its source is `simview/Sources/M3App/`.
+
 ## Limits
 
 This is not real SwiftUI layout, fonts, animation, or Metal. It proves nothing
-about Apple's renderer. The module renders once with the initial state. State
-writes and button actions are stored. They never fire. Touch input is
-milestone M3. Its frame format lives in `docs/SIM-INPUT-MODEL.md`.
+about Apple's renderer. Hit testing is ours, so M3 proves our input model, not
+iOS gesture recognizers. No scroll, fling, pinch, rotate, or keyboard. The
+runner takes times from the file, not from a clock.

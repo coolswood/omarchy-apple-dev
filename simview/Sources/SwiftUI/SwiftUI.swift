@@ -5,10 +5,10 @@
 // Ours end to end: these declarations, the 5 x 7 bitmap glyphs, the layout
 // and raster pass, and the PNG encoder. No Apple source, no third-party code.
 //
-// Not in this module: real SwiftUI layout, font shaping, animation, Metal,
-// and the state write plus touch loop (M3, docs/SIM-INPUT-MODEL.md). State
-// and Button actions are stored; M2 never runs them, so the app renders once
-// with the initial state.
+// Not in this module: real SwiftUI layout, font shaping, animation, Metal.
+// M3 adds the scripted touch loop: a frames file goes through validation,
+// hit testing, the touch rules of docs/SIM-INPUT-MODEL.md, and @State
+// writes, and each frame ends with a re-render. `--frames` turns it on.
 
 import Foundation
 
@@ -22,6 +22,8 @@ public enum ViewBuilder {
   public static func buildBlock<Content: View>(_ content: Content) -> Content { content }
   public static func buildBlock<C0: View, C1: View>(_ c0: C0, _ c1: C1)
     -> TupleView<(C0, C1)> { TupleView((c0, c1)) }
+  public static func buildBlock<C0: View, C1: View, C2: View>(_ c0: C0, _ c1: C1, _ c2: C2)
+    -> TupleView<(TupleView<(C0, C1)>, C2)> { TupleView((TupleView((c0, c1)), c2)) }
   public static func buildExpression<Content: View>(_ content: Content) -> Content { content }
 }
 
@@ -45,10 +47,12 @@ public protocol Scene {
   associatedtype Body: Scene
   var body: Self.Body { get }
   func _simSceneSpec() -> Spec
+  func _simStateRoot() -> Any
 }
 
 public extension Scene {
   func _simSceneSpec() -> Spec { body._simSceneSpec() }
+  func _simStateRoot() -> Any { self }
 }
 
 public protocol App {
@@ -58,25 +62,43 @@ public protocol App {
 }
 
 public extension App {
-  // Entry point for @main apps: parse --out, render one frame, write the PNG.
+  // Entry point for @main apps. Without --frames: render once (M2 behavior).
+  // With --frames: run the M3 touch loop, then write the final render.
   static func main() {
     var path: String?
+    var framesPath: String?
     var it = CommandLine.arguments.dropFirst().makeIterator()
     while let a = it.next() {
       if a == "--out" { path = it.next() }
+      if a == "--frames" { framesPath = it.next() }
     }
     guard let out = path else {
-      FileHandle.standardError.write(Data("usage: \(CommandLine.arguments[0]) --out <file.png>\n".utf8))
+      FileHandle.standardError.write(Data("usage: \(CommandLine.arguments[0]) --out <file.png> [--frames <file.json>]\n".utf8))
       exit(2)
     }
-    let canvas = Sim.render(Self().body._simSceneSpec())
-    do {
-      try Sim.writePNG(canvas, to: out)
-    } catch {
-      FileHandle.standardError.write(Data("simview: \(error)\n".utf8))
-      exit(1)
+    let app = Self()
+    let scene = app.body
+    let stateRoot = scene._simStateRoot()
+    if let framesFile = framesPath {
+      let frames = Sim.loadFrames(framesFile)
+      let canvas = Sim.run(frames: frames, scene: scene, stateRoot: stateRoot)
+      do {
+        try Sim.writePNG(canvas, to: out)
+      } catch {
+        FileHandle.standardError.write(Data("simview: \(error)\n".utf8))
+        exit(1)
+      }
+      print("wrote \(out) \(canvas.width)x\(canvas.height)")
+    } else {
+      let (canvas, _) = Sim.render(scene._simSceneSpec())
+      do {
+        try Sim.writePNG(canvas, to: out)
+      } catch {
+        FileHandle.standardError.write(Data("simview: \(error)\n".utf8))
+        exit(1)
+      }
+      print("wrote \(out) \(canvas.width)x\(canvas.height)")
     }
-    print("wrote \(out) \(canvas.width)x\(canvas.height)")
   }
 }
 
@@ -95,11 +117,12 @@ public struct EmptyScene: Scene {
 }
 
 // The render tree the measure and draw passes walk. Public only because the
-// protocol requirements above expose it; app code never names it.
+// protocol requirements above expose it; app code never names it. The button
+// carries its action so the touch loop can fire it.
 public enum Spec {
   case empty
   case text(String)
-  indirect case button(Spec)
+  indirect case button(Spec, () -> Void)
   indirect case tuple([Spec])
   indirect case vstack(HorizontalAlignment, spacing: Int, children: [Spec])
 }
@@ -120,6 +143,8 @@ public struct WindowGroup<Content: View>: Scene {
   public typealias Body = EmptyScene
   public var body: EmptyScene { EmptyScene() }
   public func _simSceneSpec() -> Spec { content._simSpec() }
+  // The touch loop reads @State values from this retained view.
+  public func _simStateRoot() -> Any { content }
 }
 
 public struct HorizontalAlignment {
@@ -157,7 +182,7 @@ public struct Text: View {
 }
 
 public struct Button<Label: View>: View {
-  let action: () -> Void  // stored for M3; M2 renders once and never fires it
+  let action: () -> Void
   let label: Label
   public init(action: @escaping () -> Void, @ViewBuilder label: () -> Label) {
     self.action = action
@@ -165,7 +190,7 @@ public struct Button<Label: View>: View {
   }
   public typealias Body = EmptyView
   public var body: EmptyView { EmptyView() }
-  public func _simSpec() -> Spec { .button(label._simSpec()) }
+  public func _simSpec() -> Spec { .button(label._simSpec(), action) }
 }
 
 extension Button where Label == Text {
@@ -176,11 +201,18 @@ extension Button where Label == Text {
 
 @propertyWrapper
 public struct State<Value> {
-  var value: Value
-  public init(wrappedValue: Value) { value = wrappedValue }
+  // Reference cell: copies of the view struct share one box, so the action
+  // closure and the next render see the same value. A write needs no mutable
+  // self, which is why the setter is nonmutating.
+  final class Box {
+    var value: Value
+    init(_ value: Value) { self.value = value }
+  }
+  var box: Box
+  public init(wrappedValue: Value) { box = Box(wrappedValue) }
   public var wrappedValue: Value {
-    get { value }
-    nonmutating set { fatalError("simview renders once in M2; state writes land with M3") }
+    get { box.value }
+    nonmutating set { box.value = newValue }
   }
   public var projectedValue: Binding<Value> {
     Binding(get: { wrappedValue }, set: { wrappedValue = $0 })
@@ -213,7 +245,7 @@ enum Sim {
       return Size(w: 0, h: 0)
     case .text(let t):
       return textSize(t)
-    case .button(let inner):
+    case .button(let inner, _):
       return measure(inner)
     case .tuple(let kids):
       return stackSize(kids, spacing: 0)
@@ -233,27 +265,51 @@ enum Sim {
     return Size(w: w, h: h)
   }
 
-  static func draw(_ s: Spec, in c: inout Canvas, at x: Int, y: Int, width: Int,
-                   color: Pixel = black) {
+  // One node placed by the layout pass, in draw order. Later nodes draw on
+  // top, so hit testing walks them in reverse. Button nodes carry their id
+  // and action; their label text is a separate node and does the drawing.
+  struct PlacedNode {
+    let spec: Spec
+    let x: Int
+    let y: Int
+    let w: Int
+    let h: Int
+    let color: Pixel
+    let buttonId: Int?
+    let action: (() -> Void)?
+  }
+
+  static func layout(_ s: Spec, at x: Int, y: Int, width: Int, color: Pixel,
+                     nextButton: inout Int, into out: inout [PlacedNode]) {
+    let size = measure(s)
     switch s {
     case .empty:
       break
-    case .text(let t):
-      drawText(t, in: &c, at: x, y: y, color: color)
-    case .button(let inner):
-      draw(inner, in: &c, at: x, y: y, width: width, color: blue)
+    case .text:
+      out.append(PlacedNode(spec: s, x: x, y: y, w: size.w, h: size.h,
+                            color: color, buttonId: nil, action: nil))
+    case .button(let inner, let action):
+      let id = nextButton
+      nextButton += 1
+      out.append(PlacedNode(spec: s, x: x, y: y, w: size.w, h: size.h,
+                            color: blue, buttonId: id, action: action))
+      layout(inner, at: x, y: y, width: size.w, color: blue,
+             nextButton: &nextButton, into: &out)
     case .tuple(let kids):
-      drawStack(kids, spacing: 0, in: &c, at: x, y: y, width: width, color: color)
+      layoutStack(kids, spacing: 0, at: x, y: y, width: width,
+                  alignment: HorizontalAlignment(kind: .center), color: color,
+                  nextButton: &nextButton, into: &out)
     case .vstack(let alignment, let spacing, let kids):
-      drawStack(kids, spacing: spacing, in: &c, at: x, y: y, width: width,
-                alignment: alignment, color: color)
+      layoutStack(kids, spacing: spacing, at: x, y: y, width: width,
+                  alignment: alignment, color: color,
+                  nextButton: &nextButton, into: &out)
     }
   }
 
-  static func drawStack(_ kids: [Spec], spacing: Int, in c: inout Canvas,
-                        at x: Int, y: Int, width: Int,
-                        alignment: HorizontalAlignment = HorizontalAlignment(kind: .center),
-                        color: Pixel = black) {
+  static func layoutStack(_ kids: [Spec], spacing: Int, at x: Int, y: Int,
+                          width: Int, alignment: HorizontalAlignment,
+                          color: Pixel, nextButton: inout Int,
+                          into out: inout [PlacedNode]) {
     var cy = y
     for k in kids {
       let ks = measure(k)
@@ -263,18 +319,219 @@ enum Sim {
       case .leading: kx = x
       case .trailing: kx = x + width - ks.w
       }
-      draw(k, in: &c, at: kx, y: cy, width: ks.w, color: color)
+      layout(k, at: kx, y: cy, width: ks.w, color: color,
+             nextButton: &nextButton, into: &out)
       cy += ks.h + spacing
     }
   }
 
-  static func render(_ spec: Spec) -> Canvas {
+  static func draw(_ placed: [PlacedNode], into c: inout Canvas) {
+    for p in placed {
+      if case .text(let t) = p.spec {
+        drawText(t, in: &c, at: p.x, y: p.y, color: p.color)
+      }
+    }
+  }
+
+  static func render(_ spec: Spec) -> (Canvas, [PlacedNode]) {
     var c = Canvas(width: screenWidth, height: screenHeight, fill: Pixel.white)
+    var placed: [PlacedNode] = []
+    var nextButton = 1
     let s = measure(spec)
-    let x = (screenWidth - s.w) / 2
-    let y = (screenHeight - s.h) / 2
-    draw(spec, in: &c, at: x, y: y, width: s.w)
-    return c
+    layout(spec, at: (screenWidth - s.w) / 2, y: (screenHeight - s.h) / 2,
+           width: s.w, color: black, nextButton: &nextButton, into: &placed)
+    draw(placed, into: &c)
+    return (c, placed)
+  }
+
+  // MARK: touch input (M3, docs/SIM-INPUT-MODEL.md)
+
+  enum Phase: String {
+    case began, moved, ended, cancelled, stationary
+  }
+
+  struct FingerRec {
+    let finger: Int
+    let phase: Phase
+    let x: Int
+    let y: Int
+  }
+
+  struct Frame {
+    let tMs: Int
+    let fingers: [FingerRec]
+  }
+
+  static func framesFail(_ msg: String) -> Never {
+    FileHandle.standardError.write(Data("frames: \(msg)\n".utf8))
+    exit(2)
+  }
+
+  static func fingerRec(_ dict: [String: Any], frame i: Int, record j: Int) -> FingerRec {
+    func named(_ k: String) -> Int {
+      guard let v = dict[k] as? Int else {
+        framesFail("frame \(i) finger \(j): missing or non-integer \(k)")
+      }
+      return v
+    }
+    let n = named("finger")
+    guard (0...9).contains(n) else { framesFail("frame \(i) finger \(j): finger \(n) is out of range 0 to 9") }
+    guard let raw = dict["phase"] as? String, let phase = Phase(rawValue: raw) else {
+      framesFail("frame \(i) finger \(j): phase must be began, moved, ended, cancelled or stationary")
+    }
+    return FingerRec(finger: n, phase: phase, x: named("x"), y: named("y"))
+  }
+
+  // Loads and validates a frames file. A {"tap": [x, y]} entry expands to a
+  // began frame and an ended frame 80 ms apart. Refuses out-of-order t_ms,
+  // naming the frame index.
+  static func loadFrames(_ path: String) -> [Frame] {
+    guard let data = FileManager.default.contents(atPath: path) else {
+      framesFail("cannot read \(path)")
+    }
+    let obj: Any
+    do {
+      obj = try JSONSerialization.jsonObject(with: data)
+    } catch {
+      framesFail("\(path): \(error)")
+    }
+    guard let arr = obj as? [Any] else { framesFail("\(path): root must be an array") }
+    var out: [Frame] = []
+    var prevT: Int?
+    for (i, item) in arr.enumerated() {
+      if let short = item as? [String: Any], let tap = short["tap"] as? [Any] {
+        guard tap.count == 2, let x = tap[0] as? Int, let y = tap[1] as? Int else {
+          framesFail("frame \(i): tap must be [x, y]")
+        }
+        let t = (short["t_ms"] as? Int) ?? (prevT ?? 0)
+        if let prev = prevT, t < prev { framesFail("frame \(i): t_ms \(t) goes backward (previous \(prev))") }
+        out.append(Frame(tMs: t, fingers: [FingerRec(finger: 0, phase: .began, x: x, y: y)]))
+        out.append(Frame(tMs: t + 80, fingers: [FingerRec(finger: 0, phase: .ended, x: x, y: y)]))
+        prevT = t + 80
+        continue
+      }
+      guard let dict = item as? [String: Any] else { framesFail("frame \(i): not an object") }
+      guard let t = dict["t_ms"] as? Int else { framesFail("frame \(i): missing t_ms") }
+      if let prev = prevT, t < prev { framesFail("frame \(i): t_ms \(t) goes backward (previous \(prev))") }
+      guard let list = dict["fingers"] as? [Any], !list.isEmpty else {
+        framesFail("frame \(i): fingers must be a non-empty list")
+      }
+      out.append(Frame(tMs: t, fingers: list.enumerated().map { j, f in
+        guard let fd = f as? [String: Any] else {
+          framesFail("frame \(i) finger \(j): not an object")
+        }
+        return fingerRec(fd, frame: i, record: j)
+      }))
+      prevT = t
+    }
+    return out
+  }
+
+  // The touch rules of docs/SIM-INPUT-MODEL.md: the target is fixed at touch
+  // down, the whole gesture shares it, and the action fires only when the
+  // last finger ends inside that target. A cancelled finger kills the gesture.
+  struct Gesture {
+    var active = false
+    var target: Int?
+    var cancelled = false
+    var down: Set<Int> = []
+
+    mutating func process(_ rec: FingerRec, buttons: [PlacedNode]) -> (() -> Void)? {
+      switch rec.phase {
+      case .began:
+        if !active {
+          active = true
+          target = hitTest(x: rec.x, y: rec.y, buttons: buttons)
+          cancelled = false
+          down = []
+        }
+        down.insert(rec.finger)
+        return nil
+      case .ended:
+        down.remove(rec.finger)
+        guard active, !cancelled, down.isEmpty, let id = target,
+              let node = buttons.last(where: { $0.buttonId == id }),
+              rec.x >= node.x, rec.x < node.x + node.w,
+              rec.y >= node.y, rec.y < node.y + node.h else {
+          return nil
+        }
+        return node.action
+      case .cancelled:
+        down.remove(rec.finger)
+        cancelled = true
+        return nil
+      case .moved, .stationary:
+        down.insert(rec.finger)
+        return nil
+      }
+    }
+
+    mutating func endIfDone() {
+      if down.isEmpty {
+        active = false
+        target = nil
+        cancelled = false
+      }
+    }
+  }
+
+  static func targetName(_ id: Int?) -> String {
+    id.map { "Button#\($0)" } ?? "none"
+  }
+
+  // Reads the @State values of the retained root view by reflection, as
+  // name:value pairs. The wrapper storage label is the property name with a
+  // leading underscore.
+  static func stateDescription(_ root: Any) -> String {
+    var parts: [String] = []
+    for child in Mirror(reflecting: root).children {
+      guard let label = child.label, label.hasPrefix("_") else { continue }
+      guard let box = Mirror(reflecting: child.value).children.first?.value,
+            let val = Mirror(reflecting: box).children.first?.value else { continue }
+      parts.append("\(label.dropFirst()):\(val)")
+    }
+    return parts.joined(separator: ",")
+  }
+
+  // Topmost visible element under the point. Later nodes draw on top, so the
+  // walk goes in reverse draw order.
+  static func hitTest(x: Int, y: Int, buttons: [PlacedNode]) -> Int? {
+    for node in buttons.reversed() where node.buttonId != nil {
+      if x >= node.x, x < node.x + node.w, y >= node.y, y < node.y + node.h {
+        return node.buttonId
+      }
+    }
+    return nil
+  }
+
+  // The M3 loop: validate first, then walk the frames. Each frame fires the
+  // actions the touch rules allow, re-renders, and logs one line per finger
+  // record after that render succeeds.
+  static func run(frames: [Frame], scene: any Scene, stateRoot: Any) -> Canvas {
+    var (canvas, placed) = render(scene._simSceneSpec())
+    for node in placed where node.buttonId != nil {
+      print("button id=\(node.buttonId!) rect=\(node.x),\(node.y),\(node.w),\(node.h)")
+    }
+    var gesture = Gesture()
+    for frame in frames {
+      var lines: [String] = []
+      for rec in frame.fingers {
+        if let action = gesture.process(rec, buttons: placed) {
+          action()
+        }
+        lines.append("t=\(frame.tMs) finger=\(rec.finger) \(rec.phase.rawValue) "
+          + "(\(rec.x),\(rec.y)) target=\(targetName(gesture.target)) "
+          + "state=\(stateDescription(stateRoot))")
+      }
+      gesture.endIfDone()
+      let next = render(scene._simSceneSpec())
+      canvas = next.0
+      placed = next.1
+      for line in lines {
+        print(line + " render=ok")
+      }
+    }
+    return canvas
   }
 
   // MARK: glyphs
@@ -282,11 +539,15 @@ enum Sim {
   struct Size { let w: Int; let h: Int }
 
   // Hand-drawn 5 x 7 glyphs, rows of 5 bits, only the ASCII the demo apps
-  // need. Unknown characters advance one cell and draw nothing.
+  // need. The five descender glyphs (g j p q y) carry two extra rows below
+  // the baseline, so they are 5 x 9. Unknown characters advance one cell and
+  // draw nothing.
   enum Font {
     static let glyphWidth = 5
     static let glyphHeight = 7
+    static let descenderExtra = 2
     static let advance = 6     // glyph plus one column gap
+    static let descenders: Set<Character> = ["g", "j", "p", "q", "y"]
     static let glyphs: [Character: String] = [
       " ": "00000 00000 00000 00000 00000 00000 00000",
       "0": "01110 10001 10011 10101 11001 10001 01110",
@@ -305,17 +566,17 @@ enum Sim {
       "d": "00001 00001 01111 10001 10001 10001 01111",
       "e": "00000 00000 01110 10001 11111 10000 01110",
       "f": "00110 01001 01000 11100 01000 01000 01000",
-      "g": "00000 01111 10001 10001 01111 00001 01110",
+      "g": "00000 00000 01111 10001 10001 10001 01111 00001 01110",
       "h": "10000 10000 11110 10001 10001 10001 10001",
       "i": "00100 00000 00100 00100 00100 00100 00100",
-      "j": "00010 00000 00010 00010 00010 10010 01100",
+      "j": "00010 00000 00010 00010 00010 00010 00010 10010 01100",
       "k": "10000 10010 10100 11000 10100 10010 10001",
       "l": "01100 00100 00100 00100 00100 00100 01110",
       "m": "00000 00000 11110 10101 10101 10101 10101",
       "n": "00000 00000 11110 10001 10001 10001 10001",
       "o": "00000 00000 01110 10001 10001 10001 01110",
-      "p": "00000 11110 10001 10001 11110 10000 10000",
-      "q": "00000 01111 10001 10001 01111 00001 00001",
+      "p": "00000 00000 11110 10001 10001 10001 11110 10000 10000",
+      "q": "00000 00000 01111 10001 10001 10001 01111 00001 00001",
       "r": "00000 00000 01110 10001 10000 10000 10000",
       "s": "00000 00000 01111 10000 01110 00001 11110",
       "t": "01000 01000 11100 01000 01000 01000 00110",
@@ -323,7 +584,7 @@ enum Sim {
       "v": "00000 00000 10001 10001 10001 01010 00100",
       "w": "00000 00000 10001 10001 10101 10101 01010",
       "x": "00000 00000 10001 01010 00100 01010 10001",
-      "y": "00000 10001 10001 10001 01111 00001 01110",
+      "y": "00000 00000 10001 10001 10001 01111 00001 00001 01110",
       "z": "00000 00000 11111 00010 00100 01000 11111",
       "A": "01110 10001 10001 11111 10001 10001 10001",
       "B": "11110 10001 10001 11110 10001 10001 11110",
@@ -363,7 +624,9 @@ enum Sim {
   }
 
   static func textSize(_ t: String) -> Size {
-    Size(w: max(0, t.count * Font.advance - 1), h: Font.glyphHeight)
+    let descends = t.contains(where: { Font.descenders.contains($0) })
+    return Size(w: max(0, t.count * Font.advance - 1),
+                h: Font.glyphHeight + (descends ? Font.descenderExtra : 0))
   }
 
   static func drawText(_ t: String, in c: inout Canvas, at x: Int, y: Int, color: Pixel) {
