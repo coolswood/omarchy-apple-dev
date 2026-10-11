@@ -101,6 +101,37 @@ authentication while app binaries are plain arm64 (see the dyld cache notes in t
 already builds and runs arm64 Linux binaries natively on Apple Silicon hardware, so
 every rung below has both a `qemu-aarch64-static` option and a native arm64 option.
 
+## What an app needs from its host
+
+A phone gives an app more than a CPU and a screen. Before the first frame, the system has done many jobs. A host that
+runs the app must do the same jobs. If it does not, the app stops at start.
+
+The table lists those jobs and the rung that covers each. It is our reading of published research notes on running
+simulator-built apps without the simulator. We have run none of the rows. A row becomes a measured claim when its
+rung lands a receipt.
+
+| Job | The app expects | Our host | Rung |
+|---|---|---|---|
+| Find system services by name | Named lookups at start. When they fail, the app exits. | A small name registry. It answers known names. It logs and refuses the rest. | M4 |
+| Give the app a screen and a scene | A scene with a size, a scale and an active state. The app makes its window after that. | One fixed scene, 390 by 844 points, three pixels per point. | M2 fixed, M4 delivered |
+| Collect drawn layers and show them | Layers go to a render service. It draws them into shared buffers. | Our draw path. It fills an RGBA buffer on the CPU, then writes a PNG. | M2 |
+| Use the GPU | Drawing and shader builds call a GPU service. | None. Route B has no GPU. Route A leaves it to the user's machine. | out of scope |
+| Deliver touches | A finger, a phase, a position, a time and a target window. | Our event record and hit testing. See [SIM-INPUT-MODEL.md](SIM-INPUT-MODEL.md). | M3 |
+| Deliver keys and text focus | A focus owner. Without one, the app drops keys silently. | Not planned yet. | later |
+| Copy and paste | A pasteboard service shared by apps. | An in-memory store for one run. | M4 or later |
+| Keep app data | A private folder for documents, caches and preferences. | One folder per bundle id under a run directory. | M4 |
+| Keep secrets | A keychain service. | A plain file, marked as not secure. | M4 or later |
+| Network and TLS | Plain sockets work alone. TLS needs a trust service. | Sockets first. TLS only when a test app needs it. | M4 |
+| Language and region | Locale, 24-hour time and first weekday from system preferences. | Fixed `en_US` values in the run directory. | M4 |
+| Web views, drag and drop between apps, dictation | Helper processes or system services. | Not planned. | out of scope |
+
+Two points follow.
+
+- Route B (our own declarations and draw code) replaces the UI framework. It needs only the rows our view vocabulary
+  touches. Those are the scene, drawing, touches and, for M4, the app data folder.
+- Route A (a runtime the user supplies) keeps Apple's framework code. It must provide every row. Each one is a
+  stand-in service around the user's own libraries. That is a large job, and it stays on the user's machine.
+
 ## Milestone ladder
 
 Each rung lands a receipt in `receipts/` with the commands and outputs actually observed.
@@ -147,6 +178,8 @@ the native arm64 run is staged and pending
   Apple's renderer.
 
 ### M3 — touch input mapping
+
+The event record, the rules and the test list for this rung are in [SIM-INPUT-MODEL.md](SIM-INPUT-MODEL.md).
 
 - Entry checks: M2 renders in a loop from a state struct; taps arrive first as scripted
   events (a JSON list of tap points); a window is optional, not required.
