@@ -52,8 +52,9 @@ M3 adds the input loop of `docs/SIM-INPUT-MODEL.md`. The demo binary gains
 
 The file holds frames of finger records, or the short form
 `{"tap": [x, y]}`, which expands to a began frame and an ended frame 80 ms
-apart. The loader refuses out-of-order `t_ms` and names the frame index. The
-runner prints each button rect, then one log line per finger record:
+apart, for finger 0. The loader refuses out-of-order `t_ms` and names the
+frame index. The runner prints each button rect, then one log line per
+finger record:
 
 ```
 button id=1 rect=177,430,35,9
