@@ -24,6 +24,11 @@ public enum ViewBuilder {
     -> TupleView<(C0, C1)> { TupleView((c0, c1)) }
   public static func buildBlock<C0: View, C1: View, C2: View>(_ c0: C0, _ c1: C1, _ c2: C2)
     -> TupleView<(TupleView<(C0, C1)>, C2)> { TupleView((TupleView((c0, c1)), c2)) }
+  public static func buildBlock<C0: View, C1: View, C2: View, C3: View>(
+    _ c0: C0, _ c1: C1, _ c2: C2, _ c3: C3
+  ) -> TupleView<(TupleView<(TupleView<(C0, C1)>, C2)>, C3)> {
+    TupleView((TupleView((TupleView((c0, c1)), c2)), c3))
+  }
   public static func buildExpression<Content: View>(_ content: Content) -> Content { content }
 }
 
@@ -124,13 +129,21 @@ public struct EmptyScene: Scene {
 
 // The render tree the measure and draw passes walk. Public only because the
 // protocol requirements above expose it; app code never names it. The button
-// carries its action so the touch loop can fire it.
+// carries its action so the touch loop can fire it. M4 adds the navigation
+// cases: `.link` holds a label and a destination builder until the stack
+// rewrites it into a button that pushes; `.titled` carries a navigationTitle;
+// `.navstack` draws the bar and holds the screen below it; `.hairline` is a
+// 1 point separator line.
 public enum Spec {
   case empty
   case text(String)
   indirect case button(Spec, () -> Void)
   indirect case tuple([Spec])
   indirect case vstack(HorizontalAlignment, spacing: Int, children: [Spec])
+  indirect case link(Spec, () -> Spec)
+  indirect case titled(String, Spec)
+  case hairline
+  indirect case navstack(String?, (() -> Void)?, Spec)
 }
 
 public struct TupleView<T>: View {
@@ -200,6 +213,114 @@ public struct Button<Label: View>: View {
 extension Button where Label == Text {
   public init<S: StringProtocol>(_ title: S, action: @escaping () -> Void) {
     self.init(action: action, label: { Text(title) })
+  }
+}
+
+// MARK: - Navigation (M4)
+
+// Pushes its destination when tapped. The enclosing NavigationStack rewrites
+// the `.link` node into a button whose action appends the destination
+// builder to the stack, so the destination is rebuilt on every pass like the
+// rest of the tree and its @State stays live. Outside a stack it never lays
+// out.
+public struct NavigationLink<Label: View, Destination: View>: View {
+  let label: Label
+  let destination: Destination
+  public init(@ViewBuilder destination: () -> Destination, @ViewBuilder label: () -> Label) {
+    self.label = label()
+    self.destination = destination()
+  }
+  public typealias Body = EmptyView
+  public var body: EmptyView { EmptyView() }
+  public func _simSpec() -> Spec {
+    .link(label._simSpec(), { [destination] in destination._simSpec() })
+  }
+}
+
+extension NavigationLink where Label == Text {
+  public init<S: StringProtocol>(_ title: S, @ViewBuilder destination: () -> Destination) {
+    self.init(destination: destination, label: { Text(title) })
+  }
+}
+
+// Leading-aligned stack of rows with a separator line between rows. Rows are
+// buttons or links laid out like any stack child; the hit area stays the
+// label rect, as in M3.
+public struct List<Content: View>: View {
+  let content: Content
+  public init(@ViewBuilder content: () -> Content) { self.content = content() }
+  public typealias Body = EmptyView
+  public var body: EmptyView { EmptyView() }
+  public func _simSpec() -> Spec {
+    let kids = Sim.flattened(content._simSpec())
+    var rows: [Spec] = []
+    for k in kids {
+      rows.append(k)
+      rows.append(.hairline)
+    }
+    return .vstack(HorizontalAlignment(kind: .leading), spacing: 16, children: rows)
+  }
+}
+
+public struct Titled<Content: View>: View {
+  let title: String
+  let content: Content
+  public init(title: String, content: Content) {
+    self.title = title
+    self.content = content
+  }
+  public typealias Body = EmptyView
+  public var body: EmptyView { EmptyView() }
+  public func _simSpec() -> Spec { .titled(title, content._simSpec()) }
+}
+
+public extension View {
+  func navigationTitle(_ title: String) -> Titled<Self> {
+    Titled(title: title, content: self)
+  }
+}
+
+// Holds the pushed screens. `path` stores one destination builder per push;
+// each pass rebuilds the top screen through it, so destination @State keeps
+// its pooled box and re-renders like root state. The back button pops one
+// level; its hit area is its label rect, laid by the bar.
+public struct NavigationStack<Content: View>: View {
+  @State private var path: [() -> Spec] = []
+  let content: Content
+  public init(@ViewBuilder content: () -> Content) { self.content = content() }
+  public typealias Body = EmptyView
+  public var body: EmptyView { EmptyView() }
+
+  // Turns `.link` nodes into buttons that push. Destinations are not walked
+  // here; they are rebuilt through the stored builders and rewritten on the
+  // pass that shows them, so a pushed link pushes onto the same stack.
+  private func pushable(_ s: Spec) -> Spec {
+    switch s {
+    case .link(let label, let build):
+      return .button(label, { self.path.append(build) })
+    case .button(let label, let action):
+      return .button(pushable(label), action)
+    case .tuple(let kids):
+      return .tuple(kids.map(pushable))
+    case .vstack(let alignment, let spacing, let kids):
+      return .vstack(alignment, spacing: spacing, children: kids.map(pushable))
+    case .titled(let title, let child):
+      return .titled(title, pushable(child))
+    default:
+      return s
+    }
+  }
+
+  public func _simSpec() -> Spec {
+    let root = pushable(content._simSpec())
+    let screen: Spec
+    if let build = path.last {
+      screen = pushable(build())
+    } else {
+      screen = root
+    }
+    let back: (() -> Void)? = path.isEmpty ? nil : { self.path.removeLast() }
+    return .navstack(Sim.firstTitle(screen), back, screen)
   }
 }
 
@@ -278,6 +399,14 @@ enum Sim {
       return stackSize(flattened(s), spacing: 0)
     case .vstack(_, let spacing, let kids):
       return stackSize(kids.flatMap(flattened), spacing: spacing)
+    case .hairline:
+      return Size(w: 0, h: 1)
+    case .titled(_, let child):
+      return measure(child)
+    case .link:
+      preconditionFailure("simview: NavigationLink outside a NavigationStack")
+    case .navstack:
+      return Size(w: screenWidth, h: screenHeight)
     }
   }
 
@@ -330,7 +459,52 @@ enum Sim {
       layoutStack(kids.flatMap(flattened), spacing: spacing, at: x, y: y,
                   width: width, alignment: alignment, color: color,
                   nextButton: &nextButton, into: &out)
+    case .hairline:
+      out.append(PlacedNode(spec: s, x: x, y: y, w: max(width, 1), h: 1,
+                            color: Pixel.separator, buttonId: nil, action: nil))
+    case .titled(_, let child):
+      layout(child, at: x, y: y, width: width, color: color,
+             nextButton: &nextButton, into: &out)
+    case .link:
+      preconditionFailure("simview: NavigationLink outside a NavigationStack")
+    case .navstack(let title, let back, let screen):
+      layoutNavStack(title, back, screen, nextButton: &nextButton, into: &out)
     }
+  }
+
+  // The navigation bar: 44 points tall, title centered in it, an optional
+  // back button whose hit area is its label rect, a separator line at the
+  // bar's bottom edge. The screen lays out centered in the area below.
+  static let navBarHeight = 44
+
+  static func layoutNavStack(_ title: String?, _ back: (() -> Void)?,
+                             _ screen: Spec, nextButton: inout Int,
+                             into out: inout [PlacedNode]) {
+    if let t = title {
+      let size = textSize(t)
+      out.append(PlacedNode(spec: .text(t), x: (screenWidth - size.w) / 2,
+                            y: (navBarHeight - size.h) / 2, w: size.w, h: size.h,
+                            color: black, buttonId: nil, action: nil))
+    }
+    // The back button: its hit area is its label rect, like every button.
+    let backLabel = "< Back"
+    let backSize = textSize(backLabel)
+    let backX = 12
+    let backY = (navBarHeight - backSize.h) / 2
+    if let pop = back {
+      let id = nextButton
+      nextButton += 1
+      out.append(PlacedNode(spec: .text(backLabel), x: backX, y: backY,
+                            w: backSize.w, h: backSize.h, color: blue,
+                            buttonId: id, action: pop))
+    }
+    out.append(PlacedNode(spec: .hairline, x: 0, y: navBarHeight - 1,
+                          w: screenWidth, h: 1, color: Pixel.separator,
+                          buttonId: nil, action: nil))
+    let size = measure(screen)
+    layout(screen, at: (screenWidth - size.w) / 2,
+           y: navBarHeight + (screenHeight - navBarHeight - size.h) / 2,
+           width: size.w, color: black, nextButton: &nextButton, into: &out)
   }
 
   static func layoutStack(_ kids: [Spec], spacing: Int, at x: Int, y: Int,
@@ -340,6 +514,14 @@ enum Sim {
     var cy = y
     for k in kids {
       let ks = measure(k)
+      // A separator line spans the stack's content width whatever the
+      // alignment, so list rows read as rows.
+      if case .hairline = k {
+        out.append(PlacedNode(spec: k, x: x, y: cy, w: max(width, 1), h: 1,
+                              color: Pixel.separator, buttonId: nil, action: nil))
+        cy += 1 + spacing
+        continue
+      }
       let kx: Int
       switch alignment.kind {
       case .center: kx = x + (width - ks.w) / 2
@@ -354,8 +536,17 @@ enum Sim {
 
   static func draw(_ placed: [PlacedNode], into c: inout Canvas) {
     for p in placed {
-      if case .text(let t) = p.spec {
+      switch p.spec {
+      case .text(let t):
         drawText(t, in: &c, at: p.x, y: p.y, color: p.color)
+      case .hairline:
+        for y in p.y..<p.y + p.h {
+          for x in p.x..<p.x + p.w {
+            c.set(x: x, y: y, p.color)
+          }
+        }
+      default:
+        break
       }
     }
   }
@@ -369,6 +560,22 @@ enum Sim {
            width: s.w, color: black, nextButton: &nextButton, into: &placed)
     draw(placed, into: &c)
     return (c, placed)
+  }
+
+  // The title of a screen: the outermost navigationTitle on it. A pushed
+  // screen is rebuilt each pass, so its title is read from its own spec.
+  static func firstTitle(_ s: Spec) -> String? {
+    if case .titled(let t, _) = s { return t }
+    switch s {
+    case .button(let label, _):
+      return firstTitle(label)
+    case .tuple(let kids):
+      return kids.lazy.compactMap(firstTitle).first
+    case .vstack(_, _, let kids):
+      return kids.lazy.compactMap(firstTitle).first
+    default:
+      return nil
+    }
   }
 
   // MARK: touch input (M3, docs/SIM-INPUT-MODEL.md)
@@ -669,6 +876,7 @@ enum Sim {
       "!": "00100 00100 00100 00100 00100 00000 00100",
       "?": "01110 10001 00001 00010 00100 00000 00100",
       "-": "00000 00000 00000 01110 00000 00000 00000",
+      "<": "00010 00100 01000 10000 01000 00100 00010",
       "(": "00010 00100 01000 01000 01000 00100 00010",
       ")": "01000 00100 00010 00010 00010 00100 01000",
     ]
@@ -777,6 +985,7 @@ struct Pixel {
   let g: UInt8
   let b: UInt8
   static let white = Pixel(r: 255, g: 255, b: 255)
+  static let separator = Pixel(r: 0xE5, g: 0xE5, b: 0xE5)  // #E5E5EA-ish
 }
 
 struct Canvas {

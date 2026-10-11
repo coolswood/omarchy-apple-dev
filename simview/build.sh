@@ -36,4 +36,7 @@ run swiftc -swift-version 5 -parse-as-library -I "$b" \
 run swiftc -swift-version 5 -parse-as-library -I "$b" \
   -o "$P/overlapapp" \
   "$b/SwiftUI.o" "$P/simview/Sources/OverlapApp/OverlapApp.swift"
-echo "built $P/simview-demo, $P/m3app, $P/nestedapp and $P/overlapapp"
+run swiftc -swift-version 5 -parse-as-library -I "$b" \
+  -o "$P/navdemo" \
+  "$b/SwiftUI.o" "$P/simview/Sources/NavDemo/NavDemo.swift"
+echo "built $P/simview-demo, $P/m3app, $P/nestedapp, $P/overlapapp and $P/navdemo"
