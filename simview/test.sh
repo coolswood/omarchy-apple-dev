@@ -10,7 +10,7 @@ set -uo pipefail
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 
 if command -v swiftc >/dev/null 2>&1; then
-  P=$here
+  P=$(cd "$here/.." && pwd)  # repo root
   run() { "$@"; }
 elif [ -n "${SIMVIEW_CHROOT_RUN:-}" ]; then
   P=/work

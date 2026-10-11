@@ -6,7 +6,7 @@
 set -euo pipefail
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
 
-P=$here
+P=$(cd "$here/.." && pwd)  # repo root
 if command -v swiftc >/dev/null 2>&1; then
   run() { "$@"; }
 elif [ -n "${SIMVIEW_CHROOT_RUN:-}" ]; then
