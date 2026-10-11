@@ -58,11 +58,27 @@ Cable out, Wi-Fi on, from the M1 Max laptop (Swift 6.4 lldb, no on-disk device s
   limit failed with "Failed to launch process with bundle identifier". `core-device launch-application`, with and
   without `--suspended`, failed with code 10002. The app was not left running (`proclist` empty, `pkill` run). Earlier
   runs, with the phone locked but the lock screen showing, launched fine. We left the phone as it was, so we do not know whether that is the cause.
-- Lead for the breakpoint, not tested: the first sysroot-less run printed "Executable binary changed from <local path>
-  to /private/var/containers/...". The USB flow avoids this with
-  `target.module[0].SetPlatformFileSpec(<remote path>)` (`device-run.sh`, in `lldb_session`). The throwaway test script
-  we ran these tests with is not in the repo, and it did not make that call. The next run will add it and show whether
-  the breakpoint then stops.
+- Retry 1 on 2026-10-11 at 12:45Z, screen on, with the platform file spec added and a 40 s wait: launch worked and the
+  breakpoint inserted (`breakpoint list`: `locations = 1, resolved = 1`). The log shows debugserver answered `OK` to the
+  insert packet for `main`. The wait ended while lldb was still handling dyld image-load stops, and no stop at `main` was
+  seen.
+- Retry 2 at 13:59Z, screen on, the same script with a 220 s wait: the stop was seen.
+  ```
+  Process 259 stopped
+  * thread #1, stop reason = breakpoint 1.1
+      frame #0: 0x0000000102d78444 SwiftUIWide1`main
+  (lldb) register read pc sp x0 x1
+        pc = 0x0000000102d78444  SwiftUIWide1`main
+        sp = 0x000000016d08b3b0
+        x0 = 0x0000000000000001
+        x1 = 0x000000016d08ba38
+  1: name = 'main', locations = 1, resolved = 1, hit count = 1
+  ```
+  The run took 3 min 53 s from the first probe to the end. `process detach` printed `Process 259 detached`, and the app
+  was then killed. Retry 1 and retry 2 differ only in the wait time, so the wait is shown to matter. The platform file
+  spec was in both runs, so its own effect is not isolated.
+- A RNProbe launch check ran right after retry 2 and failed to launch (no pid, empty output). The screen may have gone
+  off during the four minutes. We did not check, and we did not look at any screenshot.
 - After every run the app was killed, the forwarder and tunnel were stopped, and `proclist` showed no app or debugserver
   left on the phone.
 
