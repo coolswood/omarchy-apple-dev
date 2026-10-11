@@ -36,3 +36,14 @@ pass.
 |---|-----|-------|----------|
 | 9 | Nested child state survives the rebuild | `nestedapp`, tap at Button#1 center, the button owned by a child view with its own `@State` | Exit 0. The `ended` line shows `state=taps:1,rounds:0`. The child's box is pooled by slot, so the rebuilt tree reads the new value. |
 | 10 | App state re-renders | `nestedapp`, tap at Button#2 center, the button whose action writes `@State` on the App struct | Exit 0. The `ended` line shows `state=taps:0,rounds:1`. The render after the frame differs from the no-tap render. |
+
+Rows 11 to 13 came from the second review round, which named three
+implementation changes that could survive the earlier rows. Each row kills
+its named change; the receipt records the failed run against each changed
+build. Rows 9 and 10 do not cover those three.
+
+| # | Row | Input | Expected |
+|---|-----|-------|----------|
+| 11 | Topmost wins under overlap | `overlapapp`, whose Button#1 label is Button#2; both rects are identical; tap at the shared center | Exit 0. Both lines say `target=Button#2`, and the `ended` line shows `state=which:2`. A hit test that walks draw order forward picks Button#1 and fails this row. |
+| 12 | Second finger on another button | `m3app`: finger 0 down on Button#1, finger 1 down on Button#2, finger 0 lifts on Button#1, finger 1 lifts on Button#2 | Exit 0. All four lines say `target=Button#1`, and all show `state=count:0`. Per-finger targets produce a Button#2 line or an action and fail this row. |
+| 13 | Stationary keeps the gesture open | `m3app`: finger 0 began on Button#1; finger 0 stationary plus finger 1 began; finger 1 ends inside Button#1 while finger 0 is stationary; finger 0 ends inside | Exit 0. Five lines show `state=count:0`, the stationary lines are logged, and exactly one action fires on the last lift. A runner that rebuilds the down set from each frame and drops stationary fingers fires early and fails this row. |

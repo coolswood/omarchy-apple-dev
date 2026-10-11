@@ -303,6 +303,63 @@ else
   log "FAIL row 10: render did not change"; fail=1
 fi
 
+echo "== row 11: topmost button wins under overlap"
+ovrects=$(probe_rects overlapapp)
+rect_center "$(log "$ovrects" | sed -n 1p)"
+write_tap "$bh/row11.json" "$cx" "$cy" 0
+run "$P/overlapapp" --frames "$b/row11.json" --out "$b/row11.png" >"$bh/row11.log" 2>&1
+n2=$(grep -c 'target=Button#2' "$bh/row11.log")
+if [ $? -eq 0 ] && [ "$n2" -eq 2 ] && grep -q 'state=which:2' "$bh/row11.log" \
+  && ! grep -q 'target=Button#1' "$bh/row11.log"; then
+  log "ok   the inner button, drawn last, took the touch"
+else
+  log "FAIL row 11"; cat "$bh/row11.log"; fail=1
+fi
+
+echo "== row 12: second finger down on another button"
+rect_center "$(log "$m3rects" | sed -n 1p)"
+cx1=$cx; cy1=$cy
+rect_center "$(log "$m3rects" | sed -n 2p)"
+cat > "$bh/row12.json" <<EOF
+[
+  {"t_ms": 0,   "fingers": [{"finger": 0, "phase": "began", "x": $cx1, "y": $cy1}]},
+  {"t_ms": 40,  "fingers": [{"finger": 0, "phase": "stationary", "x": $cx1, "y": $cy1},
+                            {"finger": 1, "phase": "began", "x": $cx, "y": $cy}]},
+  {"t_ms": 80,  "fingers": [{"finger": 0, "phase": "ended", "x": $cx1, "y": $cy1},
+                            {"finger": 1, "phase": "stationary", "x": $cx, "y": $cy}]},
+  {"t_ms": 120, "fingers": [{"finger": 1, "phase": "ended", "x": $cx, "y": $cy}]}
+]
+EOF
+run "$P/m3app" --frames "$b/row12.json" --out "$b/row12.png" >"$bh/row12.log" 2>&1
+n1=$(grep -c 'target=Button#1' "$bh/row12.log")
+z=$(grep -c 'state=count:0' "$bh/row12.log")
+if [ $? -eq 0 ] && [ "$n1" -eq 6 ] && [ "$z" -eq 6 ]; then
+  log "ok   one shared target, no action on either button"
+else
+  log "FAIL row 12"; cat "$bh/row12.log"; fail=1
+fi
+
+echo "== row 13: stationary finger keeps the gesture open"
+rect_center "$(log "$m3rects" | sed -n 1p)"
+cat > "$bh/row13.json" <<EOF
+[
+  {"t_ms": 0,   "fingers": [{"finger": 0, "phase": "began", "x": $cx, "y": $cy}]},
+  {"t_ms": 60,  "fingers": [{"finger": 0, "phase": "stationary", "x": $cx, "y": $cy},
+                            {"finger": 1, "phase": "began", "x": $cx, "y": $cy}]},
+  {"t_ms": 120, "fingers": [{"finger": 0, "phase": "stationary", "x": $cx, "y": $cy},
+                            {"finger": 1, "phase": "ended", "x": $cx, "y": $cy}]},
+  {"t_ms": 180, "fingers": [{"finger": 0, "phase": "ended", "x": $cx, "y": $cy}]}
+]
+EOF
+run "$P/m3app" --frames "$b/row13.json" --out "$b/row13.png" >"$bh/row13.log" 2>&1
+if [ $? -eq 0 ] && grep -q 'finger=0 stationary' "$bh/row13.log" \
+  && [ "$(grep -c 'state=count:0' "$bh/row13.log")" -eq 5 ] \
+  && check_one_action "$bh/row13.log"; then
+  log "ok   no early fire, one action on the last lift"
+else
+  log "FAIL row 13"; cat "$bh/row13.log"; fail=1
+fi
+
 if [ "$fail" -ne 0 ]; then
   echo "simview/test-m3.sh: FAILED"
   exit 1
