@@ -245,6 +245,26 @@ phone, and we expect it would not link as written.
   survives pop and re-push (pooled boxes continue from the old value; real
   iOS resets), more than one `NavigationStack`, or a link outside a stack.
 
+### M5: vertical scrolling
+
+The scroll rules are in [SIM-INPUT-MODEL.md](SIM-INPUT-MODEL.md).
+
+Landed on branch `simview-m5` ([receipt](../receipts/2026-10-11-simview-m5.md)).
+The module gained `ScrollView`. The runner reads `began`, `moved`, and `ended`
+records as one drag. It applies the finger delta to a vertical content offset.
+It clamps the offset between zero and the content height minus the viewport
+height. A drag past eight points cancels the row tap and scrolls instead.
+Measured on the demo: viewport 390 by 844 points, content 1103 points, so the
+maximum offset is 259 points. A 200 point upward drag matches the 200 point
+golden with 0 differing pixels. A 10000 point drag clamps at 259 points. A 500
+point downward drag from offset zero stays at the root render. A tap selects
+its row. A drag that starts on a row scrolls and leaves the selection at -1.
+`simview/test-m5.sh` runs seven rows plus five mutation checks, each one
+proven in-suite against a changed build. The M2, M3, and M4 suites still pass.
+
+- Cannot prove: iOS scroll behavior. Momentum, fling, and deceleration after
+  the lift are not implemented. Neither are pinch, rotate, or keys.
+
 ## Standing rules
 
 - This project adds Linux-only checks. It does not replace the fallback ladder in

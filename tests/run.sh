@@ -37,6 +37,9 @@ bash simview/test-m3.sh || fail=1
 echo "== simview/test-m4.sh"
 bash simview/test-m4.sh || fail=1
 
+echo "== simview/test-m5.sh"
+bash simview/test-m5.sh || fail=1
+
 echo "== tests/ibtool/compile-golden.sh"
 if command -v xcrun >/dev/null 2>&1; then
   # Regenerates the golden corpus with Apple's ibtool; needs a Mac with Xcode.
