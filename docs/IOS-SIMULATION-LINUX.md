@@ -156,7 +156,9 @@ also run natively on arm64 Linux
   $ echo $?
   0
   ```
-  The same pair also printed that line with exit 0 on a native arm64 Linux laptop, with no emulator (2026-10-11).
+  The same pair also printed that line with exit 0 on a native arm64 Linux laptop, with no emulator (2026-10-11). That
+  pair is the 2026-10-10 build. It was not rebuilt from main, because the build host's `ld64.lld` refuses platform iOS,
+  so its hashes were not compared with a fresh build.
 - Cannot prove: dyld shared cache loading, the Objective-C runtime, any framework. A
   C-level hello only proves the loader and its syscall shims.
 
