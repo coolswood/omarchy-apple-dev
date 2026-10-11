@@ -20,9 +20,13 @@
 
 #define NS_ASSUME_NONNULL_BEGIN _Pragma("clang assume_nonnull begin")
 #define NS_ASSUME_NONNULL_END _Pragma("clang assume_nonnull end")
-#define NS_ENUM(_type, _name) enum _name : _type _name; enum _name : _type
-#define NS_OPTIONS(_type, _name) enum _name : _type _name; enum _name : _type
-#define NS_CLOSED_ENUM(_type, _name) NS_ENUM(_type, _name)
+/* Anonymous and named enums: RN 0.87 headers use `NS_ENUM(NSInteger){...}`. */
+#define _NSEO_PICK(_1, _2, _3, ...) _3
+#define _NSEO_1(_type) enum : _type
+#define _NSEO_2(_type, _name) enum _name : _type _name; enum _name : _type
+#define NS_ENUM(...) _NSEO_PICK(__VA_ARGS__, _NSEO_2, _NSEO_1)(__VA_ARGS__)
+#define NS_OPTIONS(...) _NSEO_PICK(__VA_ARGS__, _NSEO_2, _NSEO_1)(__VA_ARGS__)
+#define NS_CLOSED_ENUM(...) _NSEO_PICK(__VA_ARGS__, _NSEO_2, _NSEO_1)(__VA_ARGS__)
 #define NS_TYPED_ENUM
 #define NS_TYPED_EXTENSIBLE_ENUM
 #define NS_STRING_ENUM

@@ -876,32 +876,12 @@ class Generator:
 
     # -- target file plan ---------------------------------------------------
 
-    def plan_target_files(self, target_id, target):
-        """Returns (symlinks, excludes, resources, swift_rels, objc_hits).
-
-        symlinks: [(link_path_relative_to_out, destination_relative_to_project_dir)]
-        excludes/resources: paths relative to Sources/<Target>.
-        swift_rels: project-relative paths of the target's .swift files.
-        """
-        target_dir = f"Sources/{target['name']}"
-        symlinks, excludes, resources, swift_rels, objc = [], [], [], [], []
-        ib_all = []
+    def _plan_synced_groups(self, target_id, target, target_dir, infoplist_rel):
+        """One symlink + plan per synced group the target owns. Returns the
+        accumulators plus the group's IB paths (pre-excluded in the group
+        plan) and the set of those paths."""
+        symlinks, excludes, resources, swift_rels, ib_all = [], [], [], [], []
         synced_ib_paths = set()
-        infoplist_rel = None
-
-        layers = self.target_merged(target)
-        # Only the selected app target's ASSETCATALOG_COMPILER_APPICON_NAME
-        # names its primary .icon; extensions (and tests) reuse "AppIcon" as
-        # a default that must NOT silently consume the app's asset.
-        app_icon_name = None
-        if target is getattr(self, "target", None):
-            name = self.setting(layers, "ASSETCATALOG_COMPILER_APPICON_NAME") or "AppIcon"
-            if name and not name.endswith(".icon"):
-                app_icon_name = f"{name}.icon"
-        ipf = self.setting(layers, "INFOPLIST_FILE")
-        if ipf:
-            infoplist_rel = os.path.normpath(ipf)
-
         for gid in target.get("fileSystemSynchronizedGroups", []):
             g = self.objs.get(gid, {})
             gpath = self.synced_group_path(gid) or (g.get("path") or g.get("name"))
@@ -922,13 +902,15 @@ class Generator:
             base = os.path.join(self.proj_dir, gpath)
             swift_rels += [os.path.join(gpath, os.path.relpath(f, base))
                            for f in walk_files(base) if f.endswith(".swift")]
+        return symlinks, excludes, resources, swift_rels, ib_all, synced_ib_paths
 
-        # An exception set naming this target on a synced group the target
-        # does NOT own adds those files to the target (Xcode's way of sharing
-        # a few files of another target's folder). For the owner, the same
-        # set removes files (handled in synced_group_plan).
+    def _plan_shared_exceptions(self, target_id, target, target_dir, taken,
+                                symlinks, excludes, resources, swift_rels):
+        """Exception sets naming this target on synced groups the target does
+        NOT own add those files to the target (Xcode's way of sharing a few
+        files of another target's folder). For the owner, the same set removes
+        files (handled in synced_group_plan)."""
         owned = set(target.get("fileSystemSynchronizedGroups", []))
-        taken = {os.path.relpath(l, target_dir).split(os.sep)[0] for l, _ in symlinks}
         added = []
         for gid, g in self.objs.items():
             if g.get("isa") != "PBXFileSystemSynchronizedRootGroup" or gid in owned:
@@ -966,9 +948,14 @@ class Generator:
             self.warn(f"{target['name']}: {len(added)} file(s) shared from other "
                       f"targets' synced folders added, e.g. {added[0]}")
 
+    def _plan_phase_sources(self, target, target_dir, symlinks, excludes, swift_rels):
+        """Classify the target's build-phase files: Swift members (with their
+        longest-common directory, symlinked as the source anchor), ObjC hits,
+        and resources (localized variant groups included)."""
+        objc = []
+        src_anc = None
         src_files = self.phase_files(target, "PBXSourcesBuildPhase")
         res_files = self.phase_files(target, "PBXResourcesBuildPhase")
-        src_anc = None
         if src_files:
             members = []
             src_resources = []
@@ -1014,7 +1001,43 @@ class Generator:
         if objc:
             self.warn(f"{len(objc)} ObjC/C source files are not supported and were "
                       f"excluded, e.g. {objc[0]}")
+        return res_files, src_anc
 
+    def _plan_ib_resources(self, target_dir, ib_all, synced_ib_paths, src_anc,
+                           symlinks, excludes, resources):
+        """Interface Builder resources: probe each with the Linux ibtool;
+        compilable ones ship as resources, the rest are excluded."""
+        ib_missing = []
+        for p in ib_all:
+            base = os.path.splitext(os.path.basename(p))[0]
+            in_synced = p in synced_ib_paths
+            under_anc = not in_synced and src_anc and (
+                p == src_anc or p.startswith(src_anc + "/"))
+            if under_anc:
+                rel = os.path.relpath(p, src_anc)
+                rp = os.path.basename(src_anc) if rel == "." \
+                    else os.path.join(os.path.basename(src_anc), rel)
+            else:
+                rp = p
+            if ibtool_compiles(os.path.join(self.proj_dir, p)):
+                resources.append((".process", rp))
+                # synced groups pre-exclude their IB files; an emitted one
+                # must not stay in exclude: (SwiftPM would drop it again)
+                excludes[:] = [e for e in excludes if e != rp]
+                if not under_anc and not in_synced:
+                    self.mirror_file(p, target_dir, symlinks)
+            else:
+                excludes.append(rp)
+                ib_missing.append(p)
+        return ib_missing
+
+    def _plan_resources(self, target, layers, target_dir, res_files, src_anc,
+                        synced_ib_paths, infoplist_rel,
+                        symlinks, excludes, resources, ib_all):
+        """Resource-phase entries: IB files deferred to the ibtool probe, .icon
+        assets left to ship.sh, the rest emitted under the source anchor when
+        one exists. Runs the IB probe and the intent Swift generation.
+        Returns the excluded IB files."""
         ib_excluded = []
         for ref_id, p in res_files:
             if os.path.splitext(p)[1].lower() in IB_EXTS:
@@ -1055,34 +1078,14 @@ class Generator:
             else:
                 self.mirror_file(p, target_dir, symlinks)
         ib_all += ib_excluded
-        ib_missing = []
-        for p in ib_all:
-            base = os.path.splitext(os.path.basename(p))[0]
-            in_synced = p in synced_ib_paths
-            under_anc = not in_synced and src_anc and (
-                p == src_anc or p.startswith(src_anc + "/"))
-            if under_anc:
-                rel = os.path.relpath(p, src_anc)
-                rp = os.path.basename(src_anc) if rel == "." \
-                    else os.path.join(os.path.basename(src_anc), rel)
-            else:
-                rp = p
-            if ibtool_compiles(os.path.join(self.proj_dir, p)):
-                resources.append((".process", rp))
-                # synced groups pre-exclude their IB files; an emitted one
-                # must not stay in exclude: (SwiftPM would drop it again)
-                excludes = [e for e in excludes if e != rp]
-                if not under_anc and not in_synced:
-                    self.mirror_file(p, target_dir, symlinks)
-            else:
-                excludes.append(rp)
-                ib_missing.append(p)
+        ib_missing = self._plan_ib_resources(
+            target_dir, ib_all, synced_ib_paths, src_anc,
+            symlinks, excludes, resources)
         if ib_missing:
             self.warn(f"{len(ib_missing)} Interface Builder resource(s) excluded "
                       "- Linux ibtool cannot compile them: "
                       + ", ".join(ib_missing))
-        ib_all = ib_missing
-        missing_ui = self.excluded_storyboard_in_plist(ib_all, infoplist_rel)
+        missing_ui = self.excluded_storyboard_in_plist(ib_missing, infoplist_rel)
         if missing_ui:
             self.warn(f"Info.plist references excluded storyboard {missing_ui!r}; "
                       "the launch/main UI will be missing from the bundle")
@@ -1098,6 +1101,33 @@ class Generator:
             target["name"], layers, intents) if intents else []
         if intent_swift_syms:
             symlinks.extend(intent_swift_syms)
+        return ib_missing
+
+    def plan_target_files(self, target_id, target):
+        """Returns (symlinks, excludes, resources, swift_rels, objc_hits).
+
+        symlinks: [(link_path_relative_to_out, destination_relative_to_project_dir)]
+        excludes/resources: paths relative to Sources/<Target>.
+        swift_rels: project-relative paths of the target's .swift files.
+        """
+        target_dir = f"Sources/{target['name']}"
+        swift_rels = []
+        layers = self.target_merged(target)
+        ipf = self.setting(layers, "INFOPLIST_FILE")
+        infoplist_rel = os.path.normpath(ipf) if ipf else None
+
+        symlinks, excludes, resources, swift_rels_g, ib_all, synced_ib_paths = \
+            self._plan_synced_groups(target_id, target, target_dir, infoplist_rel)
+        swift_rels += swift_rels_g
+        taken = {os.path.relpath(l, target_dir).split(os.sep)[0] for l, _ in symlinks}
+        self._plan_shared_exceptions(
+            target_id, target, target_dir, taken,
+            symlinks, excludes, resources, swift_rels)
+        res_files, src_anc = self._plan_phase_sources(
+            target, target_dir, symlinks, excludes, swift_rels)
+        self._plan_resources(target, layers, target_dir, res_files, src_anc,
+                             synced_ib_paths, infoplist_rel,
+                             symlinks, excludes, resources, ib_all)
         return symlinks, sorted(set(excludes)), resources, swift_rels
 
     def _generate_intent_swift(self, target_name, layers, intent_def_paths):
@@ -1262,23 +1292,14 @@ class Generator:
                     found.setdefault(m.group(1), rel)
         return found
 
-    def plan_packages(self, target, swift_rels):
-        """Returns (packages, products) SwiftPM declarations for the target."""
-        target_deps = [self.objs[i] for i in target.get("packageProductDependencies", [])
-                       if isinstance(self.objs.get(i), dict)]
-        refs = {oid: o for oid, o in self.objs.items()
-                if o.get("isa") == "XCRemoteSwiftPackageReference"}
-        local_refs = {oid: o for oid, o in self.objs.items()
-                      if o.get("isa") == "XCLocalSwiftPackageReference"}
-        revs = self.resolved_revisions()
-
-        packages, products, seen_pkg, seen_prod = [], [], {}, set()
-        decl_local, local_paths = {}, []
-
-        # Pass 1: resolve every explicit product dependency (no emission yet;
-        # the provided-module closure needs the local declarations first).
+    def _plan_explicit_products(self, target, refs, local_refs, revs, seen_prod):
+        """Pass 1: resolve every explicit product dependency (no emission yet;
+        the provided-module closure needs the local declarations first).
+        Returns (explicit, decl_local, local_paths); seen_prod gains names."""
         explicit = []   # ("remote", name, url, req) | ("local", name, rp, None)
-        for dep in target_deps:
+        decl_local, local_paths = {}, []
+        for dep in [self.objs[i] for i in target.get("packageProductDependencies", [])
+                    if isinstance(self.objs.get(i), dict)]:
             name = dep.get("productName")
             if not name or name in seen_prod:
                 continue
@@ -1301,20 +1322,15 @@ class Generator:
                 if rp not in decl_local:
                     decl_local[rp] = name
                     local_paths.append(rp)
+        return explicit, decl_local, local_paths
 
-        # Pass 2: modules already carried by declared local products.
-        provided = set()
-        provider_of = {}
-        for rp, prod_name in decl_local.items():
-            closure = self.provided_module_closure(rp, prod_name)
-            provided |= closure
-            for mod in closure:
-                provider_of.setdefault(mod, prod_name)
-
-        # Pass 3: emit. A product the declared dynamic product already carries
-        # is omitted: SwiftPM fails the whole build with "linked as a static
-        # library by X and Y" when the same static product reaches both the
-        # app executable and the dynamic library.
+    def _emit_explicit_products(self, explicit, decl_local, provided, provider_of,
+                                seen_pkg, seen_prod):
+        """Pass 3: emit. A product the declared dynamic product already carries
+        is omitted: SwiftPM fails the whole build with "linked as a static
+        library by X and Y" when the same static product reaches both the
+        app executable and the dynamic library."""
+        packages, products = [], []
         for kind, name, x, req in explicit:
             if kind == "remote":
                 if name in provided:
@@ -1344,9 +1360,13 @@ class Generator:
                     products.append((name, name))
                 else:
                     products.append((name, declared))
+        return packages, products
 
-        # SwiftPM needs transitive products that target sources import directly
-        # (Xcode resolves them through indirect dependencies; SwiftPM does not).
+    def _plan_imported_products(self, target, swift_rels, decl_local, local_paths,
+                                seen_pkg, seen_prod):
+        """Pass 4: SwiftPM needs transitive products that target sources import
+        directly (Xcode resolves them through indirect dependencies; SwiftPM
+        does not). Returns (extra_packages, extra_products)."""
         imported = set()
         for rel in swift_rels:
             p = os.path.join(self.proj_dir, rel)
@@ -1379,8 +1399,8 @@ class Generator:
                 rp = disc[mod]
                 if rp not in decl_local:
                     decl_local[rp] = mod
-                    packages.append(f'.package(name: {sw_sy(mod)}, '
-                                    f'path: {sw_sy(self.path_from_out(rp))})')
+                    extra_pkgs.append(f'.package(name: {sw_sy(mod)}, '
+                                      f'path: {sw_sy(self.path_from_out(rp))})')
                 extra_prods.append((mod, decl_local[rp]))
                 seen_prod.add(mod)
                 continue
@@ -1397,6 +1417,32 @@ class Generator:
             self.warn("declared additional packages for modules the target imports "
                       "through indirect dependencies (Xcode allows this, SwiftPM "
                       "does not): " + ", ".join(sorted({m for m, _ in extra_prods})))
+        return extra_pkgs, extra_prods
+
+    def plan_packages(self, target, swift_rels):
+        """Returns (packages, products) SwiftPM declarations for the target."""
+        refs = {oid: o for oid, o in self.objs.items()
+                if o.get("isa") == "XCRemoteSwiftPackageReference"}
+        local_refs = {oid: o for oid, o in self.objs.items()
+                      if o.get("isa") == "XCLocalSwiftPackageReference"}
+        revs = self.resolved_revisions()
+
+        packages, products, seen_pkg, seen_prod = [], [], {}, set()
+        explicit, decl_local, local_paths = self._plan_explicit_products(
+            target, refs, local_refs, revs, seen_prod)
+
+        # Pass 2: modules already carried by declared local products.
+        provided, provider_of = set(), {}
+        for rp, prod_name in decl_local.items():
+            closure = self.provided_module_closure(rp, prod_name)
+            provided |= closure
+            for mod in closure:
+                provider_of.setdefault(mod, prod_name)
+
+        packages, products = self._emit_explicit_products(
+            explicit, decl_local, provided, provider_of, seen_pkg, seen_prod)
+        extra_pkgs, extra_prods = self._plan_imported_products(
+            target, swift_rels, decl_local, local_paths, seen_pkg, seen_prod)
         return packages + extra_pkgs, products + extra_prods
 
     # -- manifest assembly --------------------------------------------------
@@ -1465,64 +1511,45 @@ class Generator:
             return re.sub(r"\$\([^)]*\)", "SET-BY-HAND", val)
         return val
 
-    def target_infoplan(self, layers, target_name, dev_region, extension):
-        """Builds the adapter Info.plist for one target (app or extension):
-        the project's INFOPLIST_FILE when present, plus INFOPLIST_KEY_* values
-        when GENERATE_INFOPLIST_FILE = YES (file keys win, as in Xcode), with
-        $(BUILD_SETTING) placeholders resolved in every string value; values
-        with $(AppIdentifierPrefix)/$(TeamIdentifierPrefix) keep those
-        placeholders (fill-team-prefix.py substitutes the signing team later),
-        values with other unresolvable settings and the executable/bundle-id
-        keys xtool owns are dropped.
-
-        Returns (plist, dropped_keys); the caller writes it."""
-        ipf = self.setting(layers, "INFOPLIST_FILE")
-        ipf_path = os.path.normpath(ipf) if ipf else None
-        if ipf and not os.path.isfile(os.path.join(self.proj_dir, ipf_path)):
-            self.warn(f"INFOPLIST_FILE {ipf!r} does not exist")
-            ipf_path = None
-        plist = {}
-        if ipf_path:
-            with open(os.path.join(self.proj_dir, ipf_path), "rb") as f:
-                plist = plistlib.load(f)
-        if self.setting(layers, "GENERATE_INFOPLIST_FILE") == "YES":
-            generated = {}
-            for l in layers:
-                for k, v in l.items():
-                    if not k.startswith("INFOPLIST_KEY_") or "[sdk=" in k:
-                        continue
-                    key = k[len("INFOPLIST_KEY_"):]
-                    v = self.expand(v, layers)
-                    if key.startswith("UISupportedInterfaceOrientations"):
-                        name = "UISupportedInterfaceOrientations~ipad" if \
-                            key.endswith("_iPad") else "UISupportedInterfaceOrientations"
-                        generated[name] = v.split()
-                    elif key == "UILaunchScreen_Generation" and v == "YES":
-                        generated["UILaunchScreen"] = {}
+    def _infoplan_generated_keys(self, layers, plist, ipf_path):
+        """Merge INFOPLIST_KEY_* build settings when GENERATE_INFOPLIST_FILE =
+        YES; file keys win, as in Xcode. Returns the merged plist."""
+        if self.setting(layers, "GENERATE_INFOPLIST_FILE") != "YES":
+            return plist
+        generated = {}
+        for l in layers:
+            for k, v in l.items():
+                if not k.startswith("INFOPLIST_KEY_") or "[sdk=" in k:
+                    continue
+                key = k[len("INFOPLIST_KEY_"):]
+                v = self.expand(v, layers)
+                if key.startswith("UISupportedInterfaceOrientations"):
+                    name = "UISupportedInterfaceOrientations~ipad" if \
+                        key.endswith("_iPad") else "UISupportedInterfaceOrientations"
+                    generated[name] = v.split()
+                elif key == "UILaunchScreen_Generation" and v == "YES":
+                    generated["UILaunchScreen"] = {}
+                else:
+                    # Xcode writes its Boolean-typed generated keys as plist
+                    # booleans (probe: NSSupportsLiveActivities => true).
+                    if key in BOOL_GENERATED_KEYS and v in ("YES", "NO"):
+                        generated[key] = v == "YES"
                     else:
-                        # Xcode writes its Boolean-typed generated keys as plist
-                        # booleans (probe: NSSupportsLiveActivities => true).
-                        if key in BOOL_GENERATED_KEYS and v in ("YES", "NO"):
-                            generated[key] = v == "YES"
-                        else:
-                            generated[key] = v
-            merged = dict(generated)
-            merged.update(plist)
-            plist = merged
-            if not ipf_path:
-                self.warn("wrote a minimal Info.plist from INFOPLIST_KEY_* settings; "
-                          "review it before shipping")
-        if not ipf_path and self.setting(layers, "GENERATE_INFOPLIST_FILE") != "YES":
-            if not extension:
-                self.warn("no Info.plist file and GENERATE_INFOPLIST_FILE != YES; "
-                          "xtool.yml gets no infoPath")
-                return None, []
+                        generated[key] = v
+        merged = dict(generated)
+        merged.update(plist)
+        if not ipf_path:
+            self.warn("wrote a minimal Info.plist from INFOPLIST_KEY_* settings; "
+                      "review it before shipping")
+        return merged
 
-        # Xcode writes UIDeviceFamily from TARGETED_DEVICE_FAMILY into every
-        # target's processed Info.plist (app and extensions alike), keeping only
-        # the iphoneos families: IceCubes' "1,2,7" becomes [1, 2] (7 = visionOS,
-        # which App Store rejects in an iOS bundle: ITMS-90100). Mac targets
-        # get no UIDeviceFamily.
+    def _infoplan_device_keys(self, plist, layers, target_name, extension):
+        """UIDeviceFamily from TARGETED_DEVICE_FAMILY (Xcode writes it into
+        every processed Info.plist, keeping only the iphoneos families: IceCubes'
+        "1,2,7" becomes [1, 2] (7 = visionOS, which App Store rejects in an iOS
+        bundle: ITMS-90100); Mac targets get none) and the WidgetKit extension
+        accent/background color names from the catalog settings (probe:
+        IceCubesAppWidgetsExtension)."""
         tdf_setting = self.setting(layers, "TARGETED_DEVICE_FAMILY")
         tdf = self.expand(tdf_setting, layers) if tdf_setting and \
             self.platform != "macos" else ""
@@ -1531,9 +1558,6 @@ class Generator:
                 plist["UIDeviceFamily"] = [f for f in (int(s) for s in tdf.split(",") if s.strip()) if f in (1, 2)]
             except ValueError:
                 self.warn(f"{target_name}: unresolvable TARGETED_DEVICE_FAMILY {tdf!r}")
-        # WidgetKit extensions: Xcode's actool run writes the accent and
-        # widget-background color names from the target's catalog settings
-        # into the extension's Info.plist (probe: IceCubesAppWidgetsExtension).
         if extension:
             accent = self.setting(layers, "ASSETCATALOG_COMPILER_GLOBAL_ACCENT_COLOR_NAME")
             if accent:
@@ -1542,6 +1566,8 @@ class Generator:
             if bg:
                 plist.setdefault("NSWidgetBackgroundColorName", bg)
 
+    def _infoplan_flat_settings(self, layers, target_name, dev_region, extension):
+        """The bottom settings layer every plist placeholder resolves against."""
         flat = {}
         for l in layers:
             for k, v in l.items():
@@ -1564,12 +1590,15 @@ class Generator:
                 g = self.expand(v, [flat])
                 if g.startswith("group.") and (orig + ".").startswith(g[6:] + "."):
                     flat[k] = f"group.{self.forced_bundle_id}"
+        return flat
 
+    def _infoplan_resolve_values(self, plist, flat, target_name):
+        """Expand $(...) placeholders in every string value. Team-prefix ones
+        stay literal because only the signing step knows the team; values with
+        other unresolvable settings are dropped. Returns dropped keys."""
         kept_prefixes = []
 
         def resolve(v, where):
-            """(value, kept) - expands placeholders; team-prefix ones stay
-            literal because only the signing step knows the team."""
             if isinstance(v, str):
                 nv = self.expand(v, [flat])
                 left = set(re.findall(r"\$\(([^)]+)\)", nv))
@@ -1594,27 +1623,68 @@ class Generator:
             else:
                 dropped.append(key)
                 del plist[key]
-        # Xcode names a target's Swift module from PRODUCT_MODULE_NAME; SwiftPM names it after the
-        # target. A class named "<Xcode module>.Class" in the plist then does not exist at run time
-        # (UIKit: "could not load class NetNewsWire.SceneDelegate", black screen), so point the
-        # class keys at the SwiftPM module.
+        if kept_prefixes:
+            self.warn(f"{target_name} Info.plist keeps {sorted(set(kept_prefixes))} with "
+                      "$(AppIdentifierPrefix)-style placeholders; fill-team-prefix.py "
+                      "fills them from the signing team before packaging")
+        return dropped
+
+    def _infoplan_rename_classes(self, plist, layers, flat):
+        """Xcode names a target's Swift module from PRODUCT_MODULE_NAME; SwiftPM
+        names it after the target. A class named "<Xcode module>.Class" in the
+        plist then does not exist at run time (UIKit: "could not load class
+        NetNewsWire.SceneDelegate", black screen), so point the class keys at
+        the SwiftPM module."""
         xcode_module = self.expand(self.setting(layers, "PRODUCT_MODULE_NAME") or "", layers)
         spm_module = flat["PRODUCT_MODULE_NAME"]
-        if xcode_module and xcode_module != spm_module:
-            class_keys = {"UISceneDelegateClassName", "NSPrincipalClass", "NSExtensionPrincipalClass"}
+        if not (xcode_module and xcode_module != spm_module):
+            return
+        class_keys = {"UISceneDelegateClassName", "NSPrincipalClass", "NSExtensionPrincipalClass"}
 
-            def rename_classes(node):
-                if isinstance(node, dict):
-                    for k, v in node.items():
-                        if k in class_keys and isinstance(v, str) and v.startswith(xcode_module + "."):
-                            node[k] = spm_module + v[len(xcode_module):]
-                        else:
-                            rename_classes(v)
-                elif isinstance(node, list):
-                    for item in node:
-                        rename_classes(item)
+        def rename_classes(node):
+            if isinstance(node, dict):
+                for k, v in node.items():
+                    if k in class_keys and isinstance(v, str) and v.startswith(xcode_module + "."):
+                        node[k] = spm_module + v[len(xcode_module):]
+                    else:
+                        rename_classes(v)
+            elif isinstance(node, list):
+                for item in node:
+                    rename_classes(item)
 
-            rename_classes(plist)
+        rename_classes(plist)
+
+    def target_infoplan(self, layers, target_name, dev_region, extension):
+        """Builds the adapter Info.plist for one target (app or extension):
+        the project's INFOPLIST_FILE when present, plus INFOPLIST_KEY_* values
+        when GENERATE_INFOPLIST_FILE = YES (file keys win, as in Xcode), with
+        $(BUILD_SETTING) placeholders resolved in every string value; values
+        with $(AppIdentifierPrefix)/$(TeamIdentifierPrefix) keep those
+        placeholders (fill-team-prefix.py substitutes the signing team later),
+        values with other unresolvable settings and the executable/bundle-id
+        keys xtool owns are dropped.
+
+        Returns (plist, dropped_keys); the caller writes it."""
+        ipf = self.setting(layers, "INFOPLIST_FILE")
+        ipf_path = os.path.normpath(ipf) if ipf else None
+        if ipf and not os.path.isfile(os.path.join(self.proj_dir, ipf_path)):
+            self.warn(f"INFOPLIST_FILE {ipf!r} does not exist")
+            ipf_path = None
+        plist = {}
+        if ipf_path:
+            with open(os.path.join(self.proj_dir, ipf_path), "rb") as f:
+                plist = plistlib.load(f)
+        plist = self._infoplan_generated_keys(layers, plist, ipf_path)
+        if not ipf_path and self.setting(layers, "GENERATE_INFOPLIST_FILE") != "YES":
+            if not extension:
+                self.warn("no Info.plist file and GENERATE_INFOPLIST_FILE != YES; "
+                          "xtool.yml gets no infoPath")
+                return None, []
+
+        self._infoplan_device_keys(plist, layers, target_name, extension)
+        flat = self._infoplan_flat_settings(layers, target_name, dev_region, extension)
+        dropped = self._infoplan_resolve_values(plist, flat, target_name)
+        self._infoplan_rename_classes(plist, layers, flat)
         xtool_owned = [k for k in ("CFBundleExecutable", "CFBundleIdentifier")
                        if k in plist]
         for k in xtool_owned:
@@ -1624,10 +1694,6 @@ class Generator:
                       "(the first two are set by xtool from the product name and "
                       "bundleID; the rest use build settings the generator cannot "
                       "resolve)")
-        if kept_prefixes:
-            self.warn(f"{target_name} Info.plist keeps {sorted(set(kept_prefixes))} with "
-                      "$(AppIdentifierPrefix)-style placeholders; fill-team-prefix.py "
-                      "fills them from the signing team before packaging")
         if extension and "NSExtension" not in plist:
             self.warn(f"{target_name} Info.plist has no NSExtension dictionary; "
                       "wrote an empty one - set NSExtensionPointIdentifier by hand")
@@ -1654,128 +1720,85 @@ class Generator:
                 out.append((tid, t))
         return out
 
-    def run(self):
-        target_id, self.target = self.pick_target()
-        target = self.target
-        name = target["name"]
-        layers = self.target_merged(target)
-        self.platform = self.platform_of(layers)
-        dev_region = self.project.get("developmentRegion")
+    def _write_bundle_plist(self, tname, plist, extension):
+        """Write one adapter Info.plist; returns its file name or None."""
+        if plist is None:
+            return None
+        fname = "Info.plist" if not extension else f"{tname}-Info.plist"
+        with open(os.path.join(self.out_dir, fname), "wb") as f:
+            plistlib.dump(plist, f)
+        return fname
 
-        podfile = os.path.join(self.proj_dir, "Podfile")
-        if os.path.isfile(podfile):
-            self.warn("Podfile found; CocoaPods dependencies are not converted")
-
-        others = [f"{o['name']} ({o.get('productType', '').rsplit('.', 1)[-1]})"
-                  for _i, o in self.app_targets() if _i != target_id]
-        if others:
-            self.warn(f"skipping non-selected application targets: {', '.join(others)}")
-        embedded = self.extension_targets(target_id)
-        other_exts = [o["name"] for i, o in self.objs.items()
-                      if o.get("isa") == "PBXNativeTarget"
-                      and o.get("productType", "").endswith("app-extension")
-                      and i not in {e for e, _ in embedded}]
-        if other_exts:
-            self.warn(f"app extensions not embedded in {name} are not converted: "
-                      f"{', '.join(other_exts)}")
-
-        if os.path.exists(os.path.join(self.out_dir, "Package.swift")) or \
-                os.path.exists(os.path.join(self.out_dir, "xtool.yml")):
-            raise SystemExit(f"error: {self.out_dir} already holds an adapter; "
-                             "pass --out to write elsewhere")
-
-        def write_plist(tname, plist, extension):
-            if plist is None:
-                return None
-            fname = "Info.plist" if not extension else f"{tname}-Info.plist"
-            with open(os.path.join(self.out_dir, fname), "wb") as f:
-                plistlib.dump(plist, f)
-            return fname
-
-        def materialize(tname, symlinks):
-            for link, dest in symlinks:
-                lpath = os.path.join(self.out_dir, link)
-                os.makedirs(os.path.dirname(lpath), exist_ok=True)
-                if os.path.lexists(lpath):
-                    continue
-                os.symlink(os.path.relpath(os.path.join(self.proj_dir, dest),
-                                           os.path.dirname(lpath)), lpath)
-
-        symlink_count = 0
-        symlinks, excludes, resources, swift_rels = self.plan_target_files(
-            target_id, target)
-        resources = self.dedupe_resources(resources)
-        packages, products = self.plan_packages(target, swift_rels)
-        app_products = list(products)
-        app_swift = self.swift_settings(layers)
-        os.makedirs(os.path.join(self.out_dir, "Sources", name), exist_ok=True)
-        materialize(name, symlinks)
-        symlink_count += len(symlinks)
-        app_info, _ = self.target_infoplan(layers, name, dev_region, extension=False)
-        app_info_path = write_plist(name, app_info, extension=False)
-        ent = self.setting(layers, "CODE_SIGN_ENTITLEMENTS")
-        if ent:
-            self.warn(f"CODE_SIGN_ENTITLEMENTS {ent!r} not wired (xtool dev signs "
-                      "without entitlements; ship.sh signs with its own)")
-
-        extensions = []
-        pkg_seen = set(packages)
-        for ext_id, ext in embedded:
-            ename = ext["name"]
-            elayers = self.target_merged(ext)
-            esym, eexc, eres, eswift = self.plan_target_files(ext_id, ext)
-            if not eswift:
-                self.warn(f"extension {ename} has no Swift sources; skipped")
+    def _materialize(self, tname, symlinks):
+        for link, dest in symlinks:
+            lpath = os.path.join(self.out_dir, link)
+            os.makedirs(os.path.dirname(lpath), exist_ok=True)
+            if os.path.lexists(lpath):
                 continue
-            eres = self.dedupe_resources(eres)
-            epkgs, eprods = self.plan_packages(ext, eswift)
-            new_pkgs = [p for p in epkgs if p not in pkg_seen]
-            pkg_seen.update(new_pkgs)
-            packages += new_pkgs
-            # Package declarations are shared across the manifest; product
-            # dependencies are per target (the widget must name RSWeb itself
-            # even when the app already depends on it).
-            os.makedirs(os.path.join(self.out_dir, "Sources", ename), exist_ok=True)
-            materialize(ename, esym)
-            symlink_count += len(esym)
-            eplist, _ = self.target_infoplan(elayers, ename, dev_region, extension=True)
-            epath = write_plist(ename, eplist, extension=True)
-            dt_key = PLATFORMS[self.platform][0]
-            edt = self.setting(elayers, dt_key)
-            adt = self.setting(layers, dt_key)
-            if edt and adt and self.expand(edt, elayers) != self.expand(adt, layers):
-                self.warn(f"extension {ename} deployment target {edt} differs from "
-                          f"the app's {adt}; xtool applies one platform to the whole "
-                          "package (the app's)")
-            ent = self.setting(elayers, "CODE_SIGN_ENTITLEMENTS")
-            if ent:
-                self.warn(f"{ename}: CODE_SIGN_ENTITLEMENTS {ent!r} not wired "
-                          "(xtool dev signs without entitlements; ship.sh signs "
-                          "with its own)")
-            eicon = self.setting(elayers, "ASSETCATALOG_COMPILER_APPICON_NAME")
-            if eicon:
-                self.extension_icons[ename] = eicon
-            extensions.append({
-                "name": ename,
-                "products": eprods,
-                "excludes": eexc,
-                "resources": eres,
-                "swift": self.swift_settings(elayers),
-                "bundleID": self.bundle_id(elayers),
-                "infoPath": epath,
-            })
+            os.symlink(os.path.relpath(os.path.join(self.proj_dir, dest),
+                                       os.path.dirname(lpath)), lpath)
 
-        self.write_manifest(name, layers, packages, app_products,
-                            excludes, resources, app_swift, extensions)
-        bundle = self.bundle_id(layers)
-        if self.forced_bundle_id:
-            for e in extensions:
-                orig = e["bundleID"]
-                if orig.startswith(bundle) and len(orig) > len(bundle):
-                    e["bundleID"] = self.forced_bundle_id + orig[len(bundle):]
-                else:
-                    e["bundleID"] = f"{self.forced_bundle_id}.{e['name'].replace(' ', '')}"
-            bundle = self.forced_bundle_id
+    def _plan_extension(self, ext_id, ext, app_layers, dev_region, packages, pkg_seen):
+        """Plan one embedded extension: files, packages, Info.plist, icon.
+        Returns (entry, symlink_count); appends its new package declarations
+        to packages. (None, 0) when the extension has no Swift sources."""
+        ename = ext["name"]
+        elayers = self.target_merged(ext)
+        esym, eexc, eres, eswift = self.plan_target_files(ext_id, ext)
+        if not eswift:
+            self.warn(f"extension {ename} has no Swift sources; skipped")
+            return None, 0
+        eres = self.dedupe_resources(eres)
+        epkgs, eprods = self.plan_packages(ext, eswift)
+        new_pkgs = [p for p in epkgs if p not in pkg_seen]
+        pkg_seen.update(new_pkgs)
+        packages += new_pkgs
+        # Package declarations are shared across the manifest; product
+        # dependencies are per target (the widget must name RSWeb itself
+        # even when the app already depends on it).
+        os.makedirs(os.path.join(self.out_dir, "Sources", ename), exist_ok=True)
+        self._materialize(ename, esym)
+        eplist, _ = self.target_infoplan(elayers, ename, dev_region, extension=True)
+        epath = self._write_bundle_plist(ename, eplist, extension=True)
+        dt_key = PLATFORMS[self.platform][0]
+        edt = self.setting(elayers, dt_key)
+        adt = self.setting(app_layers, dt_key)
+        if edt and adt and self.expand(edt, elayers) != self.expand(adt, app_layers):
+            self.warn(f"extension {ename} deployment target {edt} differs from "
+                      f"the app's {adt}; xtool applies one platform to the whole "
+                      "package (the app's)")
+        ent = self.setting(elayers, "CODE_SIGN_ENTITLEMENTS")
+        if ent:
+            self.warn(f"{ename}: CODE_SIGN_ENTITLEMENTS {ent!r} not wired "
+                      "(xtool dev signs without entitlements; ship.sh signs "
+                      "with its own)")
+        eicon = self.setting(elayers, "ASSETCATALOG_COMPILER_APPICON_NAME")
+        if eicon:
+            self.extension_icons[ename] = eicon
+        entry = {
+            "name": ename,
+            "products": eprods,
+            "excludes": eexc,
+            "resources": eres,
+            "swift": self.swift_settings(elayers),
+            "bundleID": self.bundle_id(elayers),
+            "infoPath": epath,
+        }
+        return entry, len(esym)
+
+    def _rebase_extension_bundle_ids(self, extensions, bundle):
+        """With --bundle-id: extension IDs that start with the app's original
+        ID keep their suffix; the rest get '.' + the product name with spaces
+        removed. Returns the app bundle id to write."""
+        for e in extensions:
+            orig = e["bundleID"]
+            if orig.startswith(bundle) and len(orig) > len(bundle):
+                e["bundleID"] = self.forced_bundle_id + orig[len(bundle):]
+            else:
+                e["bundleID"] = f"{self.forced_bundle_id}.{e['name'].replace(' ', '')}"
+        return self.forced_bundle_id
+
+    def _write_xtool_yml(self, name, bundle, app_info_path, extensions):
         yml = "version: 1\n"
         yml += f"bundleID: {bundle}\n"
         yml += f"product: {name}\n"
@@ -1790,21 +1813,8 @@ class Generator:
         with open(os.path.join(self.out_dir, "xtool.yml"), "w") as f:
             f.write(yml)
 
-        icon = self.setting(layers, "ASSETCATALOG_COMPILER_APPICON_NAME") or "AppIcon"
-        # Icon Composer .icon: ASSETCATALOG_COMPILER_APPICON_NAME is the icon
-        # *name* (no extension). The app target's primary asset is the
-        # <name>.icon directory in either a classic Resources phase or a
-        # synced group. Symlink it into the adapter root so ship.sh (and the
-        # Linux actool) can render it; the project's own file is left alone.
-        app_icon_linked = self.symlink_app_icon(target, layers)
-        # Alternate icons: ship.sh compiles them with the Xcode 27 flags
-        # (--alternate-app-icon / --include-all-app-icons) straight from the
-        # project tree; symlink alternate .icon directories into the adapter
-        # root beside the primary so the actool inputs resolve.
-        alternates_linked = self.symlink_alternate_icons(target, layers, exclude=self.primary_app_icon_name(layers))
-        print(f"APP_ICON={icon}   # pass to ship.sh")
-        env_path = os.path.join(self.out_dir, "xtool.env")
-        with open(env_path, "w") as f:
+    def _write_xtool_env(self, layers, icon):
+        with open(os.path.join(self.out_dir, "xtool.env"), "w") as f:
             # Sourced by ship.sh: quote every value (extension product names may contain spaces).
             f.write(f"APP_ICON={shlex.quote(icon)}\n")
             if self.alternate_icon_names:
@@ -1818,8 +1828,8 @@ class Generator:
                 # One "<product>=<icon>" per line.
                 f.write("EXTENSION_APP_ICONS=" + shlex.quote("\n".join(
                     f"{name}={icn}" for name, icn in sorted(self.extension_icons.items()))) + "\n")
-        for w in self.warnings:
-            print(w, file=sys.stderr)
+
+    def _write_bsp(self):
         # A .bsp at the project root lets an editor open the Xcode project itself.
         adapter_rel = os.path.relpath(self.out_dir, self.proj_dir)
         proj_bsp = os.path.join(self.proj_dir, ".bsp", "xtool.json")
@@ -1834,6 +1844,90 @@ class Generator:
                     "argv": ["/usr/bin/env", "xtool", "dev", "build-server", "--package-path", adapter_rel],
                 }, f, indent=4)
                 f.write("\n")
+
+    def _warn_unselected_targets(self, target_id, name):
+        """Skipped targets and extensions; returns the embedded extensions."""
+        podfile = os.path.join(self.proj_dir, "Podfile")
+        if os.path.isfile(podfile):
+            self.warn("Podfile found; CocoaPods dependencies are not converted")
+        others = [f"{o['name']} ({o.get('productType', '').rsplit('.', 1)[-1]})"
+                  for _i, o in self.app_targets() if _i != target_id]
+        if others:
+            self.warn(f"skipping non-selected application targets: {', '.join(others)}")
+        embedded = self.extension_targets(target_id)
+        other_exts = [o["name"] for i, o in self.objs.items()
+                      if o.get("isa") == "PBXNativeTarget"
+                      and o.get("productType", "").endswith("app-extension")
+                      and i not in {e for e, _ in embedded}]
+        if other_exts:
+            self.warn(f"app extensions not embedded in {name} are not converted: "
+                      f"{', '.join(other_exts)}")
+        return embedded
+
+    def run(self):
+        target_id, self.target = self.pick_target()
+        target = self.target
+        name = target["name"]
+        layers = self.target_merged(target)
+        self.platform = self.platform_of(layers)
+        dev_region = self.project.get("developmentRegion")
+        embedded = self._warn_unselected_targets(target_id, name)
+
+        if os.path.exists(os.path.join(self.out_dir, "Package.swift")) or \
+                os.path.exists(os.path.join(self.out_dir, "xtool.yml")):
+            raise SystemExit(f"error: {self.out_dir} already holds an adapter; "
+                             "pass --out to write elsewhere")
+
+        symlink_count = 0
+        symlinks, excludes, resources, swift_rels = self.plan_target_files(
+            target_id, target)
+        resources = self.dedupe_resources(resources)
+        packages, products = self.plan_packages(target, swift_rels)
+        app_products = list(products)
+        app_swift = self.swift_settings(layers)
+        os.makedirs(os.path.join(self.out_dir, "Sources", name), exist_ok=True)
+        self._materialize(name, symlinks)
+        symlink_count += len(symlinks)
+        app_info, _ = self.target_infoplan(layers, name, dev_region, extension=False)
+        app_info_path = self._write_bundle_plist(name, app_info, extension=False)
+        ent = self.setting(layers, "CODE_SIGN_ENTITLEMENTS")
+        if ent:
+            self.warn(f"CODE_SIGN_ENTITLEMENTS {ent!r} not wired (xtool dev signs "
+                      "without entitlements; ship.sh signs with its own)")
+
+        extensions = []
+        pkg_seen = set(packages)
+        for ext_id, ext in embedded:
+            entry, n = self._plan_extension(ext_id, ext, layers, dev_region,
+                                            packages, pkg_seen)
+            symlink_count += n
+            if entry:
+                extensions.append(entry)
+
+        self.write_manifest(name, layers, packages, app_products,
+                            excludes, resources, app_swift, extensions)
+        bundle = self.bundle_id(layers)
+        if self.forced_bundle_id:
+            bundle = self._rebase_extension_bundle_ids(extensions, bundle)
+        self._write_xtool_yml(name, bundle, app_info_path, extensions)
+
+        icon = self.setting(layers, "ASSETCATALOG_COMPILER_APPICON_NAME") or "AppIcon"
+        # Icon Composer .icon: ASSETCATALOG_COMPILER_APPICON_NAME is the icon
+        # *name* (no extension). The app target's primary asset is the
+        # <name>.icon directory in either a classic Resources phase or a
+        # synced group. Symlink it into the adapter root so ship.sh (and the
+        # Linux actool) can render it; the project's own file is left alone.
+        app_icon_linked = self.symlink_app_icon(target, layers)
+        # Alternate icons: ship.sh compiles them with the Xcode 27 flags
+        # (--alternate-app-icon / --include-all-app-icons) straight from the
+        # project tree; symlink alternate .icon directories into the adapter
+        # root beside the primary so the actool inputs resolve.
+        alternates_linked = self.symlink_alternate_icons(target, layers, exclude=self.primary_app_icon_name(layers))
+        print(f"APP_ICON={icon}   # pass to ship.sh")
+        self._write_xtool_env(layers, icon)
+        for w in self.warnings:
+            print(w, file=sys.stderr)
+        self._write_bsp()
         print(f"wrote {self.out_dir} (Package.swift, xtool.yml, xtool.env, "
               f"{symlink_count} symlinks under Sources/, "
               f"{len(extensions)} extensions"
