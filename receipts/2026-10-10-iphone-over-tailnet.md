@@ -78,7 +78,8 @@ Cable out, Wi-Fi on, from the M1 Max laptop (Swift 6.4 lldb, no on-disk device s
   was then killed. Retry 1 and retry 2 differ in the wait time and the command timeouts set to match it, so the wait is shown to matter. The platform file
   spec was in both runs, so its own effect is not isolated.
 - A RNProbe launch check ran right after retry 2 and failed to launch (no pid, empty output). The screen may have gone
-  off during the four minutes. We did not check, and we did not look at any screenshot.
+  off during the four minutes. We did not check, and we did not look at any screenshot. Later result: see
+  `receipts/2026-10-11-rnprobe-launch.md`.
 - After every run the app was killed, the forwarder and tunnel were stopped, and `proclist` showed no app or debugserver
   left on the phone.
 
