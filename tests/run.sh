@@ -28,6 +28,9 @@ bash tests/ibtool/check-golden.sh || fail=1
 echo "== tests/install-mode.sh"
 bash tests/install-mode.sh || fail=1
 
+echo "== tests/ips-symbolicate/run.sh"
+bash tests/ips-symbolicate/run.sh || fail=1
+
 echo "== simview/test.sh"
 bash simview/test.sh || fail=1
 

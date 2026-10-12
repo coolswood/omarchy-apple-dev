@@ -365,6 +365,9 @@ it cannot map (FINDINGS.md item 27).
   and `--notarize` (Apple's notary service, ticket stapled).
 - `tools/xcodeproj2xtool.py`: an xtool adapter for an Xcode project's iOS app
   target (`--self-test` checks it).
+- `tools/ips-symbolicate.py`: reads a pulled `.ips` crash report on Linux and
+  resolves stripped frames against local Mach-O files by `LC_UUID`
+  ([docs/CRASH-SYMBOLICATION.md](docs/CRASH-SYMBOLICATION.md)).
 
 ## Findings
 
