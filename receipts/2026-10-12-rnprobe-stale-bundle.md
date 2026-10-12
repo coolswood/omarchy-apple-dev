@@ -1,8 +1,8 @@
-# RNProbe: the abort came from a stale JS bundle
+# RNProbe: the abort follows the older JS bundle
 
 2026-10-11 evening (CDT). iPhone 15 Pro Max (iPhone16,2), iOS 27.0.1 (24A446). App: RNProbe, React Native 0.87.1. Install and launch ran from a Linux machine over the tailnet, with `pymobiledevice3 apps install` and `pymobiledevice3 developer dvt launch <bundle id> --stream`. Each launch ran 25 seconds.
 
-This receipt replaces the cause open in `receipts/2026-10-11-rnprobe-launch.md`.
+This receipt answers the open cause question in `receipts/2026-10-11-rnprobe-launch.md`, with the limits stated below.
 
 ## Phone results
 

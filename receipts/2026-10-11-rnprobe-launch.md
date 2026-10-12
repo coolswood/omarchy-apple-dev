@@ -38,4 +38,4 @@ The debugger attached from the first instruction over the tailnet debug route. T
 
 Nobody checked the screen or took a screenshot. What the app draws is unknown. The cause of the early event is unknown.
 
-Later result: the abort came from a stale JS bundle, not from the runtime. See `receipts/2026-10-12-rnprobe-stale-bundle.md`.
+Later result: the abort happens with the first ipa's older JS bundle and not with a rebuild from the current app source. The mechanism is not proven. See `receipts/2026-10-12-rnprobe-stale-bundle.md`.
