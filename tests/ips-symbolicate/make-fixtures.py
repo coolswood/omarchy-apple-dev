@@ -54,7 +54,9 @@ def thin(uuid_hex, with_symbols=True, extra=None):
         # A symbol at the same address replaces the stock one (SwiftApp).
         syms = [s for s in syms if s[1] != extra[1]]
         syms.append(extra)
-    for name, value, sect in syms:
+    for sym in syms:
+        name, value = sym[0], sym[1]
+        sect = sym[2] if len(sym) > 2 else 1
         entries += struct.pack("<IBBHQ", len(strtab), 0x0F, sect, 0,
                                TEXT_VM + value)
         strtab += name.encode() + b"\0"
