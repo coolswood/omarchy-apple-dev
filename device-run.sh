@@ -47,13 +47,21 @@
 #       Exit code: 0 when the launch started, non-zero when it did not. A
 #       fatal line in the stream is a report about the app, not an error of
 #       this script. Ctrl-C during the stream stops the app and exits 130.
+#       --symbolicate [DIR] (DIR also as --symbolicate=DIR; default
+#       ./crash-<utc-timestamp>) pulls the phone's crash reports with
+#       `crash pull DIR --rsd` after the launch step, then prints each pulled
+#       .ips through tools/ips-symbolicate.py with the app binary and the
+#       Mach-O files under the app's Frameworks directory. A report for
+#       another app prints too. No report for this app: a note, exit 0.
+#       Only a failed pull exits non-zero.
 #
 #   ./device-run.sh --over-tailnet HOST PKG   install+launch over Tailscale with no cable and
 #       no Mac, iOS 27: HOST is the phone's tailnet address (100.x). One-time setup over USB:
 #       `tools/tailnet-tunnel.py pair`. tailnet-tunnel.py opens the RemotePairing tunnel (the
 #       phone advertises it on port 49152 and accepts it from any routed address; lockdownd
 #       does not, and mDNS does not cross the tailnet). Needs sudo for the TUN device and a
-#       signed PKG. --console [SECONDS] works here too; see --rsd. How-to, limits and
+#       signed PKG. --console [SECONDS] and --symbolicate [DIR] work here too;
+#       see --rsd. How-to, limits and
 #       receipts: docs/OVER-TAILNET.md.
 #
 # Without a tailnet pairing record, a phone reachable only via Tailscale can still be reached
@@ -80,7 +88,7 @@ IPSW="$HOME/.local/bin/ipsw"
 [ -x "$IPSW" ] || IPSW=$(command -v ipsw || echo "$IPSW")
 
 MODE=usb; UDID=; RSD_HOST=; RSD_PORT=; PKG=; LLDB=0; SUDO=0; ATTACH=0; TAILNET_HOST=
-CONSOLE=0; CONSOLE_SECS=20
+CONSOLE=0; CONSOLE_SECS=20; SYMBOLICATE=0; SYM_DIR=
 while [ $# -gt 0 ]; do
   case "$1" in
     --network) MODE=network ;;
@@ -92,6 +100,11 @@ while [ $# -gt 0 ]; do
       # An all-digit value is the seconds; anything else is the next flag.
       case "${2:-}" in ''|*[!0-9]*) ;; *) CONSOLE_SECS=$2; shift ;; esac ;;
     --console=*) CONSOLE=1; CONSOLE_SECS="${1#--console=}" ;;
+    --symbolicate)
+      SYMBOLICATE=1
+      # A following word that is not a flag is the pull directory.
+      case "${2:-}" in ''|--*) ;; *) SYM_DIR=$2; shift ;; esac ;;
+    --symbolicate=*) SYMBOLICATE=1; SYM_DIR="${1#--symbolicate=}" ;;
     -u|--udid) UDID="${2:?--udid needs a value}"; shift ;;
     --rsd) MODE=rsd
       RSD_HOST="${2:?usage: --rsd HOST PORT PACKAGE}"
@@ -102,7 +115,7 @@ while [ $# -gt 0 ]; do
       TAILNET_HOST="${2:?usage: --over-tailnet PHONE_TAILNET_IP PACKAGE}"
       PKG="${3:?usage: --over-tailnet PHONE_TAILNET_IP PACKAGE}"
       shift 2 ;;
-    *) echo "Unknown argument: $1 (modes: [--lldb|--attach [--sudo]] [--network] [--rsd HOST PORT PKG] [--over-tailnet HOST PKG], console: [--console [SECONDS]] or --console=SECONDS)" >&2; exit 2 ;;
+    *) echo "Unknown argument: $1 (modes: [--lldb|--attach [--sudo]] [--network] [--rsd HOST PORT PKG] [--over-tailnet HOST PKG], console: [--console [SECONDS]] or --console=SECONDS, symbolicate: [--symbolicate [DIR]] or --symbolicate=DIR)" >&2; exit 2 ;;
   esac
   shift
 done
@@ -113,6 +126,12 @@ if [ "$CONSOLE" = 1 ]; then
   esac
   if [ "$MODE" != rsd ] && [ "$MODE" != tailnet ]; then
     echo "--console works with --rsd or --over-tailnet; they hold the RSD address" >&2; exit 2
+  fi
+fi
+
+if [ "$SYMBOLICATE" = 1 ]; then
+  if [ "$MODE" != rsd ] && [ "$MODE" != tailnet ]; then
+    echo "--symbolicate works with --rsd or --over-tailnet; they hold the RSD address" >&2; exit 2
   fi
 fi
 
@@ -395,6 +414,64 @@ print("yes" if int(sys.argv[1]) in [p.get("pid", 0) for p in ps] else "no")' "$p
   return "$rc"
 }
 
+# --symbolicate: after the launch step, pull the crash reports, then print
+# each pulled .ips under its file name through tools/ips-symbolicate.py, with
+# the app binary and the Mach-O files under the app's Frameworks directory as
+# --binary. Only a failed pull is an error; a run with no report for this app
+# says so and exits 0.
+symbolicate_run() {
+  local dir=${SYM_DIR:-} app_root tmpapp= exe fw name got=0
+  local tool="$(dirname "$0")/tools/ips-symbolicate.py"
+  local bins=() args=()
+  if [ -z "$dir" ]; then dir="./crash-$(date -u +%Y%m%dT%H%M%SZ)"; fi
+  # The package is an .app directory or a signed .ipa. An .ipa is unpacked to
+  # a temp dir that every exit path below removes again.
+  case "$PKG" in
+    *.ipa)
+      tmpapp=$(mktemp -d)
+      if ! unzip -q "$PKG" -d "$tmpapp"; then
+        rm -rf "$tmpapp"
+        echo "cannot unpack $PKG" >&2; return 1
+      fi
+      app_root=$(printf '%s\n' "$tmpapp"/Payload/*.app | head -n1)
+      ;;
+    *) app_root=$PKG ;;
+  esac
+  cleanup() {
+    if [ -n "$tmpapp" ]; then rm -rf "$tmpapp" || true; fi
+  }
+  exe=$(python3 -c 'import plistlib, sys; print(plistlib.load(open(sys.argv[1], "rb"))["CFBundleExecutable"])' \
+    "$app_root/Info.plist") || { cleanup; echo "cannot read Info.plist of $app_root" >&2; return 1; }
+  [ -f "$app_root/$exe" ] || { cleanup; echo "no executable $exe in $app_root" >&2; return 1; }
+  bins=("$app_root/$exe")
+  for fw in "$app_root"/Frameworks/*.framework "$app_root"/Frameworks/*.dylib; do
+    [ -e "$fw" ] || continue
+    if [ -d "$fw" ]; then fw="$fw/$(basename "$fw" .framework)"; fi
+    [ -f "$fw" ] && bins+=("$fw")
+  done
+  mkdir -p "$dir"
+  echo "== Pulling crash reports into $dir"
+  if ! "$PMD3" crash pull "$dir" --rsd "$RSD_HOST" "$RSD_PORT"; then
+    cleanup
+    echo "crash pull failed" >&2
+    return 1
+  fi
+  for fw in "${bins[@]}"; do args+=(--binary "$fw"); done
+  for name in "$dir"/*.ips; do
+    if [ ! -e "$name" ]; then echo "no .ips report in $dir"; break; fi
+    echo "== Crash report: $(basename "$name")"
+    python3 "$tool" "$name" "${args[@]}" \
+      || echo "warning: could not symbolicate $(basename "$name")" >&2
+    # Line 1 of a report is a JSON header; its app_name names the app.
+    if head -n 1 "$name" | grep -q "\"app_name\": *\"$exe\""; then got=1; fi
+  done
+  cleanup
+  if [ "$got" = 0 ]; then
+    echo "no crash report matches app $exe in $dir"
+  fi
+  return 0
+}
+
 rsd_run() {
   echo "== Install/launch via RSD $RSD_HOST:$RSD_PORT =="
   $PMD3 apps install "$PKG" --rsd "$RSD_HOST" "$RSD_PORT"
@@ -406,6 +483,9 @@ rsd_run() {
     console_run "$BID"
   else
     $PMD3 developer core-device launch-application "$BID" "" --rsd "$RSD_HOST" "$RSD_PORT"
+  fi
+  if [ "$SYMBOLICATE" = 1 ]; then
+    symbolicate_run
   fi
 }
 

@@ -13,6 +13,7 @@
 ### Crash symbolication
 
 - `tools/ips-symbolicate.py` reads a pulled `.ips` crash report on Linux. It matches local Mach-O files by `LC_UUID` and resolves stripped frames from the symbol table. It prints the exception, the termination reason, and the backtraces of the faulting thread and the last exception. See `docs/CRASH-SYMBOLICATION.md` and `receipts/2026-10-12-ips-symbolicate.md`.
+- `device-run.sh --rsd` and `--over-tailnet` take `--symbolicate [DIR]`. After the launch step it pulls the phone's crash reports and prints each pulled `.ips` through `tools/ips-symbolicate.py` with the app binary and its frameworks. No report for the app: a note and exit 0. A failed pull is the only error. The live run is not yet proven on a phone. Covered by stub tests in `tests/device-run-symbolicate/run.sh`; see `receipts/2026-10-12-device-run-symbolicate.md`.
 
 ## v0.3.0
 
