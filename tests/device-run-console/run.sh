@@ -20,6 +20,12 @@
 #   12 bad list:   a non-JSON apps list gives a clear error and a non-zero exit, no traceback
 #   13 no start:   a launch that prints no pid line within the window gives a clear stderr
 #      message, running/fatal report unknown, non-zero exit, and still exactly one pkill
+#   14 buffering:  a python launch stub that print()s the pid line into the pipe unflushed
+#      and sleeps must still have its pid line seen (PYTHONUNBUFFERED on the launch call)
+#   15 interrupt:  launch exit 130 is an interrupt: "interrupted", exit 130, one pkill, no
+#      failed-launch text
+#   16 mode guard: --console without --rsd or --over-tailnet is refused with exit 2
+#   17 eq form:    --console=SECONDS is accepted and runs SECONDS
 # Mutants (each must fail its row):
 #   M1  drop the timeout in front of dvt launch -> row 2 no longer cuts (15 s outer timeout fires)
 #   M2  drop the dvt pkill line -> row 7 no longer sees a pkill call
@@ -53,9 +59,17 @@ if [ "$1 $2" = "apps list" ]; then
 elif [ "$1 $2" = "apps install" ]; then
   echo "Install: $3"
 elif [ "$1 $2 $3" = "developer dvt launch" ]; then
-  [ "${STUB_PID_LINE:-1}" = 1 ] && echo "Process launched with pid 4242"
-  cat "${STUB_STREAM:?}"
-  sleep "${STUB_LAUNCH_SLEEP:-0}"
+  if [ "${STUB_LAUNCH_RC:-0}" != 0 ]; then exit "$STUB_LAUNCH_RC"; fi
+  if [ "${STUB_PY_LAUNCH:-0}" = 1 ]; then
+    # Plain print() into a pipe: block-buffered unless PYTHONUNBUFFERED reaches this process.
+    python3 -c 'import os, time
+print("Process launched with pid 4242")
+time.sleep(float(os.environ["STUB_LAUNCH_SLEEP"]))'
+  else
+    [ "${STUB_PID_LINE:-1}" = 1 ] && echo "Process launched with pid 4242"
+    cat "${STUB_STREAM:?}"
+    sleep "${STUB_LAUNCH_SLEEP:-0}"
+  fi
 elif [ "$1 $2 $3" = "developer dvt proclist" ]; then
   if [ -n "${STUB_PROCLIST:-}" ]; then cat "$STUB_PROCLIST"; else echo "[]"; fi
 elif [ "$1 $2 $3" = "developer dvt pkill" ]; then
@@ -77,11 +91,14 @@ OUT=; RC=0
 drive() {
   local script=$1 cutoff=$2; shift 2
   : >"$tmp/log"
-  OUT=$(cd "$tmp/proj" && env HOME="$tmp/home" PATH="$tmp/bin:$PATH" \
+  # PYTHONUNBUFFERED is stripped so row 14 can only pass through the fix in device-run.sh.
+  OUT=$(cd "$tmp/proj" && env -u PYTHONUNBUFFERED HOME="$tmp/home" PATH="$tmp/bin:$PATH" \
     STUB_LOG="$tmp/log" STUB_STREAM="$tmp/stream.txt" STUB_PROCLIST="$tmp/proclist.json" \
     STUB_BID=com.example.app STUB_APPLIST="${STUB_APPLIST:-}" \
     STUB_APPLIST_TEXT="${STUB_APPLIST_TEXT:-}" \
     STUB_PID_LINE="${STUB_PID_LINE:-1}" \
+    STUB_PY_LAUNCH="${STUB_PY_LAUNCH:-0}" \
+    STUB_LAUNCH_RC="${STUB_LAUNCH_RC:-0}" \
     STUB_LAUNCH_SLEEP="${STUB_LAUNCH_SLEEP:-0}" \
     timeout "$cutoff" bash "$script" --rsd 127.0.0.1 65002 App.ipa "$@" 2>&1)
   RC=$?
@@ -172,6 +189,33 @@ not_has "$OUT" "fatal text seen: no" "row 13 no false fatal=no"
 n=$(calls "developer dvt pkill --bundle com.example.app")
 [ "$n" = 1 ] && ok "row 13 pkill exactly once" || bad "row 13 pkill called $n times, want 1"
 printf 'hello from the app\n' >"$tmp/stream.txt"
+
+echo "== row 14: python launch prints the pid line into the pipe unbuffered"
+STUB_PY_LAUNCH=1 STUB_LAUNCH_SLEEP=12 drive "$DEVICE_RUN" 15 --console 5
+has "$OUT" "running after 5 s: yes" "row 14 pid line reached the stream through the pipe"
+[ "$RC" = 0 ] && ok "row 14 exit 0" || bad "row 14 exit $RC, want 0"
+
+echo "== row 15: Ctrl-C (130) is an interrupt, not a failed launch"
+STUB_LAUNCH_RC=130 drive "$DEVICE_RUN" 60 --console 5
+[ "$RC" = 130 ] && ok "row 15 exit 130" || bad "row 15 exit $RC, want 130"
+has "$OUT" "interrupted" "row 15 interrupted message"
+not_has "$OUT" "launch failed" "row 15 no launch failed message"
+not_has "$OUT" "launch did not start" "row 15 no launch did not start message"
+n=$(calls "developer dvt pkill --bundle com.example.app")
+[ "$n" = 1 ] && ok "row 15 pkill exactly once" || bad "row 15 pkill called $n times, want 1"
+
+echo "== row 16: --console without an rsd or tailnet mode is refused"
+OUT=$(cd "$tmp/proj" && env HOME="$tmp/home" PATH="$tmp/bin:$PATH" STUB_LOG="$tmp/log" \
+  STUB_STREAM="$tmp/stream.txt" STUB_PROCLIST="$tmp/proclist.json" STUB_BID=com.example.app \
+  timeout 10 bash "$DEVICE_RUN" --console 2>&1)
+RC=$?
+[ "$RC" = 2 ] && ok "row 16 refused exit 2" || bad "row 16 exit $RC, want 2"
+has "$OUT" "--console works with --rsd or --over-tailnet" "row 16 mode guard message"
+
+echo "== row 17: --console=SECONDS form"
+drive "$DEVICE_RUN" 60 --console=3
+has "$OUT" "running after 3 s: yes" "row 17 --console=3 accepted and runs 3 s"
+[ "$RC" = 0 ] && ok "row 17 exit 0" || bad "row 17 exit $RC, want 0"
 
 echo "== mutant M1: drop the timeout (row 2 must fail)"
 sed 's/timeout "$CONSOLE_SECS" "\$PMD3" developer dvt launch/"$PMD3" developer dvt launch/' \

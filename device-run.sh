@@ -38,15 +38,15 @@
 #       work on iOS 26 (per-host tunnel gating, FINDINGS.md 17).
 #       PKG must be signed with a real certificate: xtool's free-provisioning
 #       signing only happens inside `xtool dev run`.
-#       --console [SECONDS] (default 20) watches the app's own output: after
-#       the install it launches the app with `developer dvt launch <bundle id>
+#       --console [SECONDS] (default 20; --console=SECONDS also works) watches the app's own
+#       output: after the install it launches the app with `developer dvt launch <bundle id>
 #       --stream`, prints stdout and stderr for SECONDS, then reports
 #       `running after N s: yes/no` (developer dvt proclist) and
 #       `fatal text seen: yes/no` (the stream holds an `uncaught exception` or
 #       `Terminating app` line), then stops the app (developer dvt pkill).
 #       Exit code: 0 when the launch started, non-zero when it did not. A
 #       fatal line in the stream is a report about the app, not an error of
-#       this script.
+#       this script. Ctrl-C during the stream stops the app and exits 130.
 #
 #   ./device-run.sh --over-tailnet HOST PKG   install+launch over Tailscale with no cable and
 #       no Mac, iOS 27: HOST is the phone's tailnet address (100.x). One-time setup over USB:
@@ -102,7 +102,7 @@ while [ $# -gt 0 ]; do
       TAILNET_HOST="${2:?usage: --over-tailnet PHONE_TAILNET_IP PACKAGE}"
       PKG="${3:?usage: --over-tailnet PHONE_TAILNET_IP PACKAGE}"
       shift 2 ;;
-    *) echo "Unknown argument: $1 (modes: [--lldb|--attach [--sudo]] [--network] [--rsd HOST PORT PKG] [--over-tailnet HOST PKG], console: [--console [SECONDS]])" >&2; exit 2 ;;
+    *) echo "Unknown argument: $1 (modes: [--lldb|--attach [--sudo]] [--network] [--rsd HOST PORT PKG] [--over-tailnet HOST PKG], console: [--console [SECONDS]] or --console=SECONDS)" >&2; exit 2 ;;
   esac
   shift
 done
@@ -341,7 +341,7 @@ print(json.load(sys.stdin)[sys.argv[1]]["Path"])' "$bid")
 # line in the stream is a report about the app, not an error of this script; a launch that
 # never started is (exit non-zero).
 console_run() {
-  local bid=$1 ibid stream rc pid run fatal
+  local bid=$1 ibid stream lrc rc pid run fatal
   # Our own app only: stream the app this run installed, not a same-named app already there.
   ibid=$(installed_bid "$bid" --rsd "$RSD_HOST" "$RSD_PORT")
   if [ -z "$ibid" ]; then
@@ -350,11 +350,20 @@ console_run() {
   fi
   stream=$(mktemp)
   echo "== Console stream of $ibid for ${CONSOLE_SECS} s =="
+  # PYTHONUNBUFFERED: the pid line is a plain print() into the pipe; buffered, timeout's
+  # SIGTERM ends the tool with no flush and the line never reaches the stream file.
   lrc=0
   # timeout cuts the stream at CONSOLE_SECS (status 124): the app streamed the whole window.
-  timeout "$CONSOLE_SECS" "$PMD3" developer dvt launch "$ibid" --stream --rsd "$RSD_HOST" "$RSD_PORT" 2>&1 |
+  PYTHONUNBUFFERED=1 timeout "$CONSOLE_SECS" "$PMD3" developer dvt launch "$ibid" --stream --rsd "$RSD_HOST" "$RSD_PORT" 2>&1 |
     tee "$stream" || lrc=$?
   rc=$lrc
+  if [ "$rc" = 130 ]; then
+    # Ctrl-C during the stream: stop the app, say so, pass the status through.
+    timeout 30 "$PMD3" developer dvt pkill --bundle "$ibid" --rsd "$RSD_HOST" "$RSD_PORT" >/dev/null 2>&1 || true
+    rm -f "$stream"
+    echo "interrupted" >&2
+    return 130
+  fi
   if [ "$rc" = 124 ]; then rc=0; fi
   pid=$(sed -n 's/^Process launched with pid \([0-9][0-9]*\)$/\1/p' "$stream" | head -n1)
   if [ -z "$pid" ]; then
