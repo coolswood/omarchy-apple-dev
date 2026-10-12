@@ -9,8 +9,8 @@ elif [ -n "${SIMVIEW_CHROOT_RUN:-}" ]; then
   P=/work
   run() { "$SIMVIEW_CHROOT_RUN" --user "$*"; }
 else
-  echo "SKIP  simview/test-m5.sh: no Swift compiler or wrapper"
-  exit 1
+  echo "SKIP  simview/test-m5.sh: no swiftc and no SIMVIEW_CHROOT_RUN wrapper"
+  exit 0
 fi
 bash "$here/build.sh" || exit 1
 bh=$here/build
