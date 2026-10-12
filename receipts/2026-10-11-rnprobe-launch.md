@@ -37,3 +37,5 @@ The debugger attached from the first instruction over the tailnet debug route. T
 ## Not checked
 
 Nobody checked the screen or took a screenshot. What the app draws is unknown. The cause of the early event is unknown.
+
+Later result: the abort came from a stale JS bundle, not from the runtime. See `receipts/2026-10-12-rnprobe-stale-bundle.md`.

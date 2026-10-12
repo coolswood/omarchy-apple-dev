@@ -27,7 +27,7 @@ embedded frameworks clean.
 
 ## Status
 
-- Device run: not yet. The signed probe app is built; no iPhone has launched it.
+- Device run: a build from the current app source launches on an iPhone and stays running for 25 s with no fatal error (`receipts/2026-10-12-rnprobe-stale-bundle.md`). The screen was not checked. The first ipa aborted because it carried a stale JS bundle.
 - After the header change for RN (variadic `NS_ENUM`), the Flutter counter and the Swift-plugin Flutter app still
   build, and the Swift overlays rebuild, on Swift 6.4.
 - Verified on Linux for RN 0.87.1, arm64 iPhone, iOS 17.0 deployment target:
