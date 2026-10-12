@@ -12,7 +12,7 @@
 ### Continuous integration
 
 - A GitHub Actions workflow runs `bash tests/run.sh` on ubuntu-latest. It runs on pushes to main and on pull requests. The job gets read-only contents permission and no secrets.
-- The runner has no Swift compiler, so the four simview suites skip there. Each skip exits 0, and the run still ends with "all checks passed". See `.github/workflows/tests.yml`.
+- The runner has a Swift compiler, so the four simview suites run and pass there, about 90 seconds in all. Only `compile-golden.sh` skips, because it needs Apple's ibtool. On a host without a Swift compiler, each simview suite skips with exit 0. See `.github/workflows/tests.yml`.
 
 ### Tools and distros
 
