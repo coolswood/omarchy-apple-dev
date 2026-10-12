@@ -26,14 +26,14 @@ The test suite ran before the tool existed:
 ## Passing
 
 The same suite after the tool landed. The fixtures are synthetic. The app is
-invented. The incident id is invented. The Mach-O files are assembled with
-`struct.pack` from Python. No Xcode or cross linker exists on the Linux test
-host.
+invented. The incident id and the OS build string are invented. The Mach-O
+files are assembled with `struct.pack` from Python. No Xcode or cross linker
+exists on the Linux test host.
 
     $ bash tests/ips-symbolicate/run.sh
     ok   exit 0 on a valid report
     ok   summary line: App: DemoApp 1.2 (dev.omarchy.demoapp)
-    ok   summary line: OS: iOS 27.0.1 (24A446)
+    ok   summary line: OS: iOS 27.0.1 (99Z9999)
     ok   summary line: Exception: EXC_BAD_ACCESS (SIGSEGV) KERN_INVALID_ADDRESS at 0x0000000000000008
     ok   summary line: Termination: SIGNAL SIGSEGV (Segmentation fault)
     ok   summary line: Faulting thread: 0 of 1
@@ -48,6 +48,12 @@ host.
     ok   truncated body exits non-zero with a JSON message
     ok   non-JSON header exits non-zero with a JSON message
     ok   fat file: arm64 slice used
+    ok   exit 0 on malformed frames
+    ok   non-object frame renders a note
+    ok   non-integer imageOffset renders a note
+    ok   good frame after malformed ones still resolves
+    ok   duplicate LC_UUID warns on stderr
+    ok   resolution still works after duplicate warning
     ok   mutation 1 (off-by-one nearest symbol) breaks the resolution row
     ok   mutation 2 (wrong image) breaks the resolution row
     tests/ips-symbolicate: all checks passed
@@ -61,6 +67,42 @@ no-local-binary line, and the row fails. The full suite passes too:
 
     $ bash tests/run.sh
     tests/run.sh: all checks passed
+
+## Review follow-ups
+
+The reviewer asked for four changes. Each got a failing first run and then a
+pass.
+
+A frame of the wrong type raised a raw traceback before the fix:
+
+    $ python3 tools/ips-symbolicate.py weird.ips --binary DemoApp
+      File "tools/ips-symbolicate.py", line 99, in resolve
+        idx = frame.get("imageIndex")
+    AttributeError: 'str' object has no attribute 'get'
+    rc=1
+
+The new rows failed before the fix and pass after it:
+
+    FAIL exit 0 on malformed frames
+    FAIL non-object frame renders a note
+    FAIL non-integer imageOffset renders a note
+    FAIL duplicate LC_UUID warns on stderr
+
+    ok   exit 0 on malformed frames
+    ok   non-object frame renders a note
+    ok   non-integer imageOffset renders a note
+    ok   good frame after malformed ones still resolves
+    ok   duplicate LC_UUID warns on stderr
+    ok   resolution still works after duplicate warning
+
+A non-object frame, a non-integer `imageOffset`, and an out-of-range
+`imageIndex` now render as short notes on stdout. Deeply nested JSON exits
+with the plain JSON error. It no longer raises a traceback. A second
+`--binary` with a `LC_UUID` already seen warns on stderr. The tool keeps the
+first file. The invented fixture build string is now `99Z9999`. The docs and
+the tool help state the input limits. The tool reads the modern JSON report
+form only. Frames resolve at `imageOffset` as given. There is no
+return-address minus 1 adjustment.
 
 ## Real-format check
 

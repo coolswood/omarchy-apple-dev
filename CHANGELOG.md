@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Crash symbolication
+
+- `tools/ips-symbolicate.py` reads a pulled `.ips` crash report on Linux. It matches local Mach-O files by `LC_UUID` and resolves stripped frames from the symbol table. It prints the exception, the termination reason, and the backtraces of the faulting thread and the last exception. See `docs/CRASH-SYMBOLICATION.md` and `receipts/2026-10-12-ips-symbolicate.md`.
+
 ## v0.3.0
 
 ### Simulation research and simview
@@ -19,10 +25,6 @@
 - `device-run.sh` and the Flutter install step look up xtool, pymobiledevice3, and ipsw on `PATH`. The lookup runs only when the pinned path holds no executable file. The pinned path stays first when it is executable.
 - The Darwin SDK registration check now matches the exact line `darwin`. A broken SDK bundle makes `swift sdk list` print a warning with the same word. The old substring match could wrongly pass on it. See `install-toolchain.sh`.
 - `docs/DISTROS.md` adds a NixOS section. The section reports the flake author's own run. This repository holds no run record for it.
-
-### Crash symbolication
-
-- `tools/ips-symbolicate.py` reads a pulled `.ips` crash report on Linux. It matches local Mach-O files by `LC_UUID` and resolves stripped frames from the symbol table. It prints the exception, the termination reason, and the backtraces of the faulting thread and the last exception. See `docs/CRASH-SYMBOLICATION.md` and `receipts/2026-10-12-ips-symbolicate.md`.
 
 ### React Native probe
 

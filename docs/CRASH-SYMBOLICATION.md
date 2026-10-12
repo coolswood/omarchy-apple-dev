@@ -33,6 +33,10 @@ the marker `[resolved locally]`. A frame with no matching binary prints
 
 - No dSYM and no DWARF. There are no source file names and no line numbers.
   Function symbols only.
+- The tool reads the modern JSON report form only. An old plain-text report
+  exits non-zero with a message.
+- A frame resolves at its `imageOffset` as given. There is no return-address
+  minus 1 adjustment.
 - Swift names stay mangled unless `swift-demangle` is on PATH.
 - System library frames rely on the symbols the device already wrote into the
   report. The tool ships no system symbol files.

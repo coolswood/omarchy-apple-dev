@@ -51,11 +51,22 @@ def fat():
     return bytes(out)
 
 
+USED_IMAGES = [
+    {"name": "DemoApp", "uuid": "AABBCCDD-1122-3344-5566-778899AABBCC",
+     "base": 4329488384, "size": 65536, "arch": "arm64",
+     "path": "/private/var/containers/Bundle/Application/"
+             "11111111-2222-3333-4444-555555555555/DemoApp.app/DemoApp"},
+    {"name": "libsystem_kernel.dylib", "uuid": "11223344-5566-7788-99AA-BBCCDDEEFF00",
+     "base": 4331000000, "size": 16384, "arch": "arm64",
+     "path": "/usr/lib/system/libsystem_kernel.dylib"},
+]
+
+
 def crash_report():
     header = {
         "app_name": "DemoApp", "app_version": "1.2",
         "bundleID": "dev.omarchy.demoapp",
-        "os_version": "iOS 27.0.1 (24A446)",
+        "os_version": "iOS 27.0.1 (99Z9999)",
         "incident_id": "00000000-1111-2222-3333-444444444444",
         "timestamp": "2026-10-12 12:00:00.00 +0000",
     }
@@ -66,15 +77,7 @@ def crash_report():
         "termination": {"namespace": "SIGNAL", "code": "SIGSEGV",
                         "indicator": "Segmentation fault"},
         "faultingThread": 0,
-        "usedImages": [
-            {"name": "DemoApp", "uuid": "AABBCCDD-1122-3344-5566-778899AABBCC",
-             "base": 4329488384, "size": 65536, "arch": "arm64",
-             "path": "/private/var/containers/Bundle/Application/"
-                     "11111111-2222-3333-4444-555555555555/DemoApp.app/DemoApp"},
-            {"name": "libsystem_kernel.dylib", "uuid": "11223344-5566-7788-99AA-BBCCDDEEFF00",
-             "base": 4331000000, "size": 16384, "arch": "arm64",
-             "path": "/usr/lib/system/libsystem_kernel.dylib"},
-        ],
+        "usedImages": USED_IMAGES,
         "threads": [{"triggered": True, "frames": [
             {"imageIndex": 1, "symbol": "mach_msg_trap", "symbolLocation": 8},
             {"imageIndex": 0, "imageOffset": 512},
@@ -88,8 +91,32 @@ def crash_report():
     return json.dumps(header) + "\n" + json.dumps(body) + "\n"
 
 
+def weird_report():
+    """A report with malformed frames: a non-object frame, an out-of-range
+    imageIndex, a string imageOffset, and one good frame after them."""
+    header = {
+        "app_name": "DemoApp", "app_version": "1.2",
+        "bundleID": "dev.omarchy.demoapp",
+        "os_version": "iOS 27.0.1 (99Z9999)",
+        "incident_id": "00000000-1111-2222-3333-444444444444",
+    }
+    body = {
+        "exception": {"type": "EXC_BAD_ACCESS", "signal": "SIGSEGV"},
+        "faultingThread": 0,
+        "usedImages": USED_IMAGES,
+        "threads": [{"triggered": True, "frames": [
+            "a string where a frame object belongs",
+            {"imageIndex": 99},
+            {"imageIndex": 0, "imageOffset": "512"},
+            {"imageIndex": 0, "imageOffset": 512},
+        ]}],
+    }
+    return json.dumps(header) + "\n" + json.dumps(body) + "\n"
+
+
 out = sys.argv[1]
 open(out + "/crash.ips", "w").write(crash_report())
+open(out + "/weird.ips", "w").write(weird_report())
 open(out + "/DemoApp", "wb").write(thin(UUID_APP))
 open(out + "/WrongApp", "wb").write(thin(UUID_WRONG))
 open(out + "/fat-DemoApp", "wb").write(fat())

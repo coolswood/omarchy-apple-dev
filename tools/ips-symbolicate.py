@@ -10,8 +10,10 @@ A frame the device already symbolicated keeps its name. A frame without a
 symbol resolves against a --binary whose LC_UUID matches the frame's image
 (thin arm64, or the arm64 slice of a fat file), using the nearest preceding
 LC_SYMTAB function symbol. Swift names stay mangled unless swift-demangle is
-on PATH. Pure Python 3 standard library; writes to stdout (errors to stderr)
-and nowhere else.
+on PATH. The tool reads the modern JSON .ips form only; the older plain-text
+form is rejected. Frames resolve at imageOffset as given, with no
+return-address minus 1 adjustment. Pure Python 3 standard library; writes to
+stdout (errors to stderr) and nowhere else.
 """
 import argparse
 import json
@@ -66,6 +68,8 @@ def parse_thin(data):
                 name = name[1:]
             syms.append((n_value - (text_vm or 0), name))
         syms.sort()
+    if not uuid:
+        return None
     return uuid, syms
 
 
@@ -96,6 +100,8 @@ def demangle(name):
 
 def resolve(frame, images, bins):
     """Render one frame as '<image>  <symbol+offset>[ [markers]]'."""
+    if not isinstance(frame, dict):
+        return "[unreadable frame]"
     idx = frame.get("imageIndex")
     img = images[idx] if isinstance(idx, int) and 0 <= idx < len(images) and \
         isinstance(images[idx], dict) else None
@@ -104,13 +110,15 @@ def resolve(frame, images, bins):
     if sym is not None:
         loc = frame.get("symbolLocation")
         return f"{name}  {sym}+{loc if loc is not None else '?'}"
-    if img is None or frame.get("imageOffset") is None:
+    if img is None:
         return f"{name}  ?"
+    off = frame.get("imageOffset")
+    if not isinstance(off, int):
+        return f"{name}  [unreadable imageOffset]"
     want = norm_uuid(img.get("uuid", ""))
     b = bins.get(want)
     if b is None:
         return f"{name}  [no local binary for {name} {img.get('uuid', '?')}]"
-    off = frame["imageOffset"]
     best = None
     for val, sym_name in b:
         if val <= off:
@@ -129,7 +137,10 @@ def norm_uuid(u):
 def main():
     global demangler
     ap = argparse.ArgumentParser(
-        description="Symbolicate an iOS .ips crash report against local Mach-O files.")
+        description="Symbolicate an iOS .ips crash report against local Mach-O files.",
+        epilog="Reads the modern JSON .ips form only; the older plain-text form "
+               "is rejected. Frames resolve at imageOffset as given, with no "
+               "return-address minus 1 adjustment.")
     ap.add_argument("report", help="path to the .ips report")
     ap.add_argument("--binary", action="append", default=[], metavar="PATH",
                     help="local Mach-O to resolve frames against; repeatable")
@@ -142,11 +153,11 @@ def main():
     first, _sep, rest = text.partition("\n")
     try:
         hdr = json.loads(first)
-    except ValueError:
+    except (ValueError, RecursionError):
         sys.exit(f"error: {args.report}: line 1 is not JSON; not a valid .ips report")
     try:
         body = json.loads(rest)
-    except ValueError:
+    except (ValueError, RecursionError):
         sys.exit(f"error: {args.report}: the report body after line 1 is not "
                  "valid JSON (report truncated or corrupt)")
 
@@ -181,6 +192,10 @@ def main():
             print(f"warning: {path}: no arm64 Mach-O slice with LC_UUID, ignored",
                   file=sys.stderr)
             continue
+        if r[0] in bins:
+            print(f"warning: {path}: LC_UUID {r[0]} already covered by an "
+                  "earlier --binary, keeping that one", file=sys.stderr)
+            continue
         bins[r[0]] = r[1]
 
     images = [im for im in body.get("usedImages") or [] if isinstance(im, dict)]
@@ -193,7 +208,8 @@ def main():
         print(f"Faulting thread: none of {len(threads)}")
     else:
         print(f"Faulting thread: {ct} of {len(threads)}")
-        for i, fr in enumerate(threads[ct].get("frames") or []):
+        thread = threads[ct] if isinstance(threads[ct], dict) else {}
+        for i, fr in enumerate(thread.get("frames") or []):
             print(f"  {i}  {resolve(fr, images, bins)}")
     last = body.get("lastExceptionBacktrace")
     if last:

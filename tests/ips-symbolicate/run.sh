@@ -27,7 +27,7 @@ rc=$?
 row "exit 0 on a valid report" "$rc"
 for want in \
   "App: DemoApp 1.2 (dev.omarchy.demoapp)" \
-  "OS: iOS 27.0.1 (24A446)" \
+  "OS: iOS 27.0.1 (99Z9999)" \
   "Exception: EXC_BAD_ACCESS (SIGSEGV) KERN_INVALID_ADDRESS at 0x0000000000000008" \
   "Termination: SIGNAL SIGSEGV (Segmentation fault)" \
   "Faulting thread: 0 of 1"; do
@@ -72,7 +72,26 @@ python3 "$tool" "$tmp/crash.ips" --binary "$tmp/fat-DemoApp" >"$tmp/out3.txt" 2>
 grep -qxF "  1  DemoApp  appfunc+0x0 [resolved locally]" "$tmp/out3.txt"
 row "fat file: arm64 slice used" $?
 
-# 5. Mutation checks: each must make a passing row fail.
+# 5. Malformed frames render as notes instead of a traceback.
+python3 "$tool" "$tmp/weird.ips" --binary "$tmp/DemoApp" \
+  >"$tmp/out4.txt" 2>"$tmp/err4.txt"
+row "exit 0 on malformed frames" $?
+grep -qxF "  0  [unreadable frame]" "$tmp/out4.txt"
+row "non-object frame renders a note" $?
+grep -qxF "  2  DemoApp  [unreadable imageOffset]" "$tmp/out4.txt"
+row "non-integer imageOffset renders a note" $?
+grep -qxF "  3  DemoApp  appfunc+0x0 [resolved locally]" "$tmp/out4.txt"
+row "good frame after malformed ones still resolves" $?
+
+# 6. Two --binary files with one LC_UUID: stderr warning, first file kept.
+python3 "$tool" "$tmp/crash.ips" --binary "$tmp/DemoApp" --binary "$tmp/DemoApp" \
+  >"$tmp/out5.txt" 2>"$tmp/err5.txt"
+grep -q "LC_UUID aabbccdd112233445566778899aabbcc already covered by an earlier --binary" "$tmp/err5.txt"
+row "duplicate LC_UUID warns on stderr" $?
+grep -qxF "  1  DemoApp  appfunc+0x0 [resolved locally]" "$tmp/out5.txt"
+row "resolution still works after duplicate warning" $?
+
+# 7. Mutation checks: each must make a passing row fail.
 mutate() {
   python3 - "$@" <<'PY'
 import sys
