@@ -18,6 +18,8 @@
 #   11 addressing: the stub answers apps list only when it carries --rsd H P, so the flag must
 #      pass the rsd args to installed_bid (fails on code that asks without them)
 #   12 bad list:   a non-JSON apps list gives a clear error and a non-zero exit, no traceback
+#   13 no start:   a launch that prints no pid line within the window gives a clear stderr
+#      message, running/fatal report unknown, non-zero exit, and still exactly one pkill
 # Mutants (each must fail its row):
 #   M1  drop the timeout in front of dvt launch -> row 2 no longer cuts (15 s outer timeout fires)
 #   M2  drop the dvt pkill line -> row 7 no longer sees a pkill call
@@ -51,7 +53,7 @@ if [ "$1 $2" = "apps list" ]; then
 elif [ "$1 $2" = "apps install" ]; then
   echo "Install: $3"
 elif [ "$1 $2 $3" = "developer dvt launch" ]; then
-  echo "Process launched with pid 4242"
+  [ "${STUB_PID_LINE:-1}" = 1 ] && echo "Process launched with pid 4242"
   cat "${STUB_STREAM:?}"
   sleep "${STUB_LAUNCH_SLEEP:-0}"
 elif [ "$1 $2 $3" = "developer dvt proclist" ]; then
@@ -79,6 +81,7 @@ drive() {
     STUB_LOG="$tmp/log" STUB_STREAM="$tmp/stream.txt" STUB_PROCLIST="$tmp/proclist.json" \
     STUB_BID=com.example.app STUB_APPLIST="${STUB_APPLIST:-}" \
     STUB_APPLIST_TEXT="${STUB_APPLIST_TEXT:-}" \
+    STUB_PID_LINE="${STUB_PID_LINE:-1}" \
     STUB_LAUNCH_SLEEP="${STUB_LAUNCH_SLEEP:-0}" \
     timeout "$cutoff" bash "$script" --rsd 127.0.0.1 65002 App.ipa "$@" 2>&1)
   RC=$?
@@ -158,6 +161,17 @@ STUB_APPLIST_TEXT='ERROR: not json' drive "$DEVICE_RUN" 60 --console 5
 has "$OUT" "apps list did not return JSON" "row 12 clear error text"
 not_has "$OUT" "Traceback" "row 12 no Python traceback"
 not_has "$OUT" "JSONDecodeError" "row 12 no JSONDecodeError text"
+
+echo "== row 13: launch prints no pid line"
+printf '' >"$tmp/stream.txt"
+STUB_PID_LINE=0 STUB_LAUNCH_SLEEP=12 drive "$DEVICE_RUN" 15 --console 2
+[ "$RC" != 0 ] && ok "row 13 non-zero exit ($RC)" || bad "row 13 exit 0, want non-zero"
+has "$OUT" "launch did not start: no 'Process launched with pid' line within 2 s" "row 13 clear no-start message"
+has "$OUT" "running after 2 s: unknown" "row 13 running unknown"
+not_has "$OUT" "fatal text seen: no" "row 13 no false fatal=no"
+n=$(calls "developer dvt pkill --bundle com.example.app")
+[ "$n" = 1 ] && ok "row 13 pkill exactly once" || bad "row 13 pkill called $n times, want 1"
+printf 'hello from the app\n' >"$tmp/stream.txt"
 
 echo "== mutant M1: drop the timeout (row 2 must fail)"
 sed 's/timeout "$CONSOLE_SECS" "\$PMD3" developer dvt launch/"$PMD3" developer dvt launch/' \

@@ -350,27 +350,38 @@ console_run() {
   fi
   stream=$(mktemp)
   echo "== Console stream of $ibid for ${CONSOLE_SECS} s =="
-  rc=0
+  lrc=0
   # timeout cuts the stream at CONSOLE_SECS (status 124): the app streamed the whole window.
   timeout "$CONSOLE_SECS" "$PMD3" developer dvt launch "$ibid" --stream --rsd "$RSD_HOST" "$RSD_PORT" 2>&1 |
-    tee "$stream" || rc=$?
+    tee "$stream" || lrc=$?
+  rc=$lrc
   if [ "$rc" = 124 ]; then rc=0; fi
   pid=$(sed -n 's/^Process launched with pid \([0-9][0-9]*\)$/\1/p' "$stream" | head -n1)
-  run=no
-  if [ -n "$pid" ] && timeout 30 "$PMD3" developer dvt proclist --rsd "$RSD_HOST" "$RSD_PORT" 2>/dev/null |
-      python3 -c '
+  if [ -z "$pid" ]; then
+    # No pid line means the launch never started: a locked phone refuses launches, an
+    # install-address mismatch refuses silently. Report it as a failed launch, not as
+    # an app that ran and died.
+    echo "launch did not start: no 'Process launched with pid' line within ${CONSOLE_SECS} s (phone locked or app refused?)" >&2
+    echo "running after ${CONSOLE_SECS} s: unknown"
+    echo "fatal text seen: unknown"
+    if [ "$rc" = 0 ]; then rc=1; fi
+  else
+    run=no
+    if timeout 30 "$PMD3" developer dvt proclist --rsd "$RSD_HOST" "$RSD_PORT" 2>/dev/null |
+        python3 -c '
 import json, sys
 ps = json.load(sys.stdin)
 print("yes" if int(sys.argv[1]) in [p.get("pid", 0) for p in ps] else "no")' "$pid" | grep -q yes; then
-    run=yes
+      run=yes
+    fi
+    if grep -Eq 'uncaught exception|Terminating app' "$stream"; then fatal=yes; else fatal=no; fi
+    echo "running after ${CONSOLE_SECS} s: $run"
+    echo "fatal text seen: $fatal"
   fi
-  if grep -Eq 'uncaught exception|Terminating app' "$stream"; then fatal=yes; else fatal=no; fi
-  echo "running after ${CONSOLE_SECS} s: $run"
-  echo "fatal text seen: $fatal"
   timeout 30 "$PMD3" developer dvt pkill --bundle "$ibid" --rsd "$RSD_HOST" "$RSD_PORT" >/dev/null 2>&1 || true
   rm -f "$stream"
-  if [ "$rc" != 0 ]; then
-    echo "launch failed: developer dvt launch exited with $rc" >&2
+  if [ "$lrc" != 0 ] && [ "$lrc" != 124 ]; then
+    echo "launch failed: developer dvt launch exited with $lrc" >&2
   fi
   return "$rc"
 }
