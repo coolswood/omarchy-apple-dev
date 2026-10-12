@@ -43,6 +43,12 @@ sudo -v                                   # the tunnel needs a TUN device
 
 For a signed app build: `./device-run.sh --over-tailnet 100.x.y.z path/to/App.ipa` (installs, launches, closes the tunnel).
 
+Add `--console [SECONDS]` (default 20) to watch the app's own output. After the install it launches the app
+with `developer dvt launch <bundle id> --stream` and prints stdout and stderr for SECONDS. Then it prints
+`running after N s: yes/no` and `fatal text seen: yes/no`, and stops the app. A fatal line in the stream is
+a report about the app, not an error of the script. The same flag works on the cable path,
+`./device-run.sh --rsd HOST PORT PKG`.
+
 ## Travel checklist
 
 1. Keep Wi-Fi on. The phone needs a Wi-Fi connection (any network, any subnet). On cellular only, the RemotePairing port is closed.

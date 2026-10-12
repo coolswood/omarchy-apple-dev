@@ -2,6 +2,14 @@
 
 ## Unreleased
 
+### Device console
+
+- `device-run.sh --rsd` and `--over-tailnet` take `--console [SECONDS]`. After the install it streams the
+  app's own output, reports `running after N s: yes/no` and `fatal text seen: yes/no`, then stops the app.
+  A fatal line is a report, not an error of the script. A stream from a running app through `--console`
+  is not yet proven on a phone. Covered by stub tests in `tests/device-run-console/run.sh`; see
+  `receipts/2026-10-12-device-run-console.md`.
+
 ### Crash symbolication
 
 - `tools/ips-symbolicate.py` reads a pulled `.ips` crash report on Linux. It matches local Mach-O files by `LC_UUID` and resolves stripped frames from the symbol table. It prints the exception, the termination reason, and the backtraces of the faulting thread and the last exception. See `docs/CRASH-SYMBOLICATION.md` and `receipts/2026-10-12-ips-symbolicate.md`.

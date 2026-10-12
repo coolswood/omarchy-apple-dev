@@ -354,6 +354,9 @@ it cannot map (FINDINGS.md item 27).
   (userspace tunnel; `--sudo` for the old kernel-tunnel path). `LLDB_CMDS`
   runs LLDB commands after the attach, in synchronous mode. `LLDB_LOAD_LEVEL`
   (default `minimal`) trades system-frame symbols for a ~30 s attach.
+  `--console [SECONDS]` streams an app's stdout and stderr after an `--rsd`
+  or `--over-tailnet` install, reports `running after N s` and
+  `fatal text seen`, and stops the app.
   `--attach` attaches to the already-running app without reinstalling.
   usbmuxd 1.1.1 can abort after a session ends. A `Restart=on-failure`
   drop-in recovers it (FINDINGS.md item 67).
