@@ -32,6 +32,21 @@ machine instructions count; STAB and data entries stay out. The frame prints
 as `symbol+delta` and gets the marker `[resolved locally]`. A frame with no
 matching binary prints `[no local binary for <image> <uuid>]`.
 
+## Pull and symbolicate in one run
+
+`device-run.sh --rsd HOST PORT PKG --symbolicate [DIR]` installs and launches
+the app, then pulls the crash reports and symbolicates them. DIR also works as
+`--symbolicate=DIR`. Without DIR the reports go to `./crash-<utc-timestamp>`
+under the project directory. The pull uses the RSD address the run already
+holds, so the flag works with `--over-tailnet` too. The modes with no RSD
+address refuse the flag.
+
+Each pulled `.ips` is printed under its file name through
+tools/ips-symbolicate.py. The tool gets the app binary and every Mach-O under
+the app's Frameworks directory. A report for another app prints too. When no
+report matches the app, the run prints a note and exits 0. Only a failed pull
+exits non-zero.
+
 ## Limits
 
 - No dSYM and no DWARF. There are no source file names and no line numbers.

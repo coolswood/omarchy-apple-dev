@@ -358,6 +358,11 @@ it cannot map (FINDINGS.md item 27).
   or `--over-tailnet` install, reports `running after N s` and
   `fatal text seen`, and stops the app. A stream from a running app
   through `--console` is not yet proven on a phone.
+  `--symbolicate [DIR]` pulls the crash reports after an `--rsd` or
+  `--over-tailnet` install and prints each one through
+  `tools/ips-symbolicate.py`
+  ([docs/CRASH-SYMBOLICATION.md](docs/CRASH-SYMBOLICATION.md)). The live run
+  of the pull is not yet proven on a phone.
   `--attach` attaches to the already-running app without reinstalling.
   usbmuxd 1.1.1 can abort after a session ends. A `Restart=on-failure`
   drop-in recovers it (FINDINGS.md item 67).
