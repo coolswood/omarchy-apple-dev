@@ -26,7 +26,8 @@ by `LC_UUID`, never by file name. For a fat file it reads every arm64 slice,
 arm64 and arm64e, and matches the report UUID against each slice's own.
 
 A matched frame resolves against the binary's `LC_SYMTAB`. The nearest
-preceding function symbol wins. Only symbols in sections flagged as holding
+preceding function symbol wins. The section count comes from the segment's
+`nsects` field, not from `maxprot`. Only symbols in sections flagged as holding
 machine instructions count; STAB and data entries stay out. The frame prints
 as `symbol+delta` and gets the marker `[resolved locally]`. A frame with no
 matching binary prints `[no local binary for <image> <uuid>]`.

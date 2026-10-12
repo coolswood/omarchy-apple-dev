@@ -64,6 +64,55 @@ def thin(uuid_hex, with_symbols=True, extra=None):
                          len(seg) + len(uuid_cmd) + len(symtab), 0, 0)
     return header + seg + uuid_cmd + symtab + entries + strtab
 
+def thin_low_maxprot(uuid_hex):
+    """Three code sections, but maxprot (2) is below nsects (3).
+
+    A reader that takes nsects from the maxprot slot sees only two sections
+    and drops the symbol in the third, so a frame there resolves to an
+    earlier function plus a large delta.
+    """
+    text = S_ATTR_PURE_INSTRUCTIONS | S_ATTR_SOME_INSTRUCTIONS
+    sections = (section(b"__text", text) + section(b"__text2", text)
+                + section(b"__text3", text))
+    cmdsize = 72 + len(sections)
+    seg = (struct.pack("<II16sQQQQiiII", 0x19, cmdsize, b"__TEXT",
+                       TEXT_VM, 0x4000, 0, 0x4000, 2, 5, 3, 0)
+           + sections)
+    uuid_cmd = struct.pack("<II", 0x1B, 24) + bytes.fromhex(uuid_hex)
+    symoff = 32 + len(seg) + len(uuid_cmd) + 24
+    strtab = bytearray(b"\0")
+    entries = bytearray()
+    for name, value, sect in (("func1", 0x100, 1), ("func3", 0x2100, 3)):
+        entries += struct.pack("<IBBHQ", len(strtab), 0x0F, sect, 0,
+                               TEXT_VM + value)
+        strtab += name.encode() + b"\0"
+    symtab = struct.pack("<IIIIII", 0x2, 24, symoff, len(entries) // 16,
+                         symoff + len(entries), len(strtab))
+    header = struct.pack("<IiiIIIII", 0xFEEDFACF, 0x0100000C, 0, 2, 3,
+                         len(seg) + len(uuid_cmd) + len(symtab), 0, 0)
+    return header + seg + uuid_cmd + symtab + entries + strtab
+
+
+def maxprot_report():
+    """One frame in the third section, at func3."""
+    header = {
+        "app_name": "DemoApp", "app_version": "1.2",
+        "bundleID": "dev.omarchy.demoapp",
+        "os_version": "iOS 27.0.1 (99Z9999)",
+        "incident_id": "00000000-1111-2222-3333-444444444444",
+        "timestamp": "2026-10-12 12:00:00.00 +0000",
+    }
+    body = {
+        "faultingThread": 0,
+        "exception": {"type": "EXC_BAD_ACCESS", "signal": "SIGSEGV"},
+        "usedImages": [USED_IMAGES[0]],
+        "threads": [{"triggered": True, "frames": [
+            {"imageIndex": 0, "imageOffset": 0x2100},
+        ]}],
+    }
+    return json.dumps(header) + "\n" + json.dumps(body) + "\n"
+
+
 
 def fat():
     arm = thin(UUID_APP)
@@ -193,4 +242,6 @@ open(out + "/SwiftApp", "wb").write(thin(UUID_APP, extra=SWIFT_SYMBOL))
 open(out + "/WrongApp", "wb").write(thin(UUID_WRONG))
 open(out + "/fat-DemoApp", "wb").write(fat())
 open(out + "/fat2-DemoApp", "wb").write(fat2())
+open(out + "/maxprot.ips", "w").write(maxprot_report())
+open(out + "/DemoAppMaxprot", "wb").write(thin_low_maxprot(UUID_APP))
 print("fixtures written to " + out)

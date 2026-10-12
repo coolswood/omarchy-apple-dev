@@ -139,6 +139,15 @@ python3 "$tool" "$tmp/fat2.ips" --binary "$tmp/fat2-DemoApp" >"$tmp/out7.txt" 2>
 grep -qxF "  0  DemoApp  appfunc+0x0 [resolved locally]" "$tmp/out7.txt"
 row "fat file: frame resolves against the second arm64 slice" $?
 
+# 11. maxprot is below nsects. The frame sits in the third code section.
+# Reading nsects from the maxprot slot drops that section, so the frame
+# resolves to an earlier function plus a large delta.
+python3 "$tool" "$tmp/maxprot.ips" --binary "$tmp/DemoAppMaxprot" \
+  >"$tmp/out10.txt" 2>/dev/null
+grep -qxF "  0  DemoApp  func3+0x0 [resolved locally]" "$tmp/out10.txt"
+row "third section kept when maxprot is below nsects" $?
+
+
 # 10. swift-demangle runs once per distinct symbol; absent demangler passes
 # the mangled name through.
 mkdir "$tmp/bin"
@@ -191,6 +200,19 @@ DEMCOUNT="$tmp/demcount2" PATH="$tmp/bin:$PATH" \
   >"$tmp/mut5.txt" 2>/dev/null
 [ -f "$tmp/demcount2" ] && [ "$(wc -l <"$tmp/demcount2")" -eq 2 ]
 row "mutation 5 (no cache) breaks the single-call row" $?
+
+# 7f. Mutation: read nsects from the maxprot slot (the old offset).
+cp "$tool" "$tmp/mut6.py"
+mutate "$tmp/mut6.py" "data, off + 64" "data, off + 56"
+python3 "$tmp/mut6.py" "$tmp/maxprot.ips" --binary "$tmp/DemoAppMaxprot" \
+  >"$tmp/mut6.txt" 2>/dev/null
+if grep -qxF "  0  DemoApp  func1+0x2000 [resolved locally]" "$tmp/mut6.txt" \
+   && ! grep -q "func3" "$tmp/mut6.txt"; then
+  row "mutation 6 (nsects from maxprot) breaks the third-section row" 0
+else
+  row "mutation 6 (nsects from maxprot) breaks the third-section row" 1
+fi
+
 
 [ "$fail" -eq 0 ] && echo "tests/ips-symbolicate: all checks passed"
 exit "$fail"

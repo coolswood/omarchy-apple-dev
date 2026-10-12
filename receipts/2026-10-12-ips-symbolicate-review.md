@@ -80,3 +80,17 @@ slice. Mutation 5 skips the demangle cache; the stub then counts two calls.
 - The cache holds decoded output per process. No report with hundreds of
   distinct Swift symbols was measured.
 - The arm64e fixture uses cpusubtype 2. No real arm64e binary was parsed.
+
+## nsects offset
+
+A review found the section count was read at offset 56 of the segment
+command. That slot is `maxprot`. `nsects` is at offset 64. The existing
+fixtures set `maxprot` to 7 and `nsects` to 2, so the suites stayed green.
+
+The fix reads offset 64. A new fixture sets `maxprot` to 2 and `nsects` to 3,
+with the frame in the third code section. Before the fix that frame resolved
+to `func1+0x2000`. After the fix it resolves to `func3+0x0`. A mutation that
+restores offset 56 makes the row fail, and the output is `func1+0x2000`.
+
+Not checked: no real dylib was parsed. The offset was checked against the
+Mach-O segment layout and against the fixture, not against a shipped library.

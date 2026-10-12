@@ -57,7 +57,10 @@ def parse_thin(data):
         elif cmd == LC_SEGMENT_64 and off + 72 <= len(data):
             if data[off + 8:off + 24].rstrip(b"\0") == b"__TEXT":
                 text_vm = struct.unpack_from("<Q", data, off + 24)[0]
-            for s in range(struct.unpack_from("<I", data, off + 56)[0]):
+            # nsects sits at +64. +56 is maxprot, which is smaller than
+            # nsects on a real dylib, so reading it there drops the last
+            # sections and their symbols.
+            for s in range(struct.unpack_from("<I", data, off + 64)[0]):
                 so = off + 72 + 80 * s
                 if so + 80 > len(data):
                     break
