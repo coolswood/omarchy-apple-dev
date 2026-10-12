@@ -15,6 +15,9 @@
 #   8  foreign:    bundle id not the one just installed -> refusal, no launch call
 #   9  usage:      the unknown-argument text lists --console
 #   10 default:    bare --console is accepted
+#   11 addressing: the stub answers apps list only when it carries --rsd H P, so the flag must
+#      pass the rsd args to installed_bid (fails on code that asks without them)
+#   12 bad list:   a non-JSON apps list gives a clear error and a non-zero exit, no traceback
 # Mutants (each must fail its row):
 #   M1  drop the timeout in front of dvt launch -> row 2 no longer cuts (15 s outer timeout fires)
 #   M2  drop the dvt pkill line -> row 7 no longer sees a pkill call
@@ -38,7 +41,13 @@ printf '%s\n' "$*" >>"${STUB_LOG:?}"
 applist=${STUB_APPLIST:-}
 [ -n "$applist" ] || printf -v applist '{"%s": {}}' "$STUB_BID"
 if [ "$1 $2" = "apps list" ]; then
-  printf '%s\n' "$applist"
+  # Real pymobiledevice3 prints no JSON when it has no --rsd or --udid address to ask.
+  case "$*" in
+    *--rsd*)
+      if [ -n "${STUB_APPLIST_TEXT:-}" ]; then printf '%s\n' "$STUB_APPLIST_TEXT"
+      else printf '%s\n' "$applist"; fi ;;
+    *) echo "ERROR: no device or tunnel given" >&2; exit 1 ;;
+  esac
 elif [ "$1 $2" = "apps install" ]; then
   echo "Install: $3"
 elif [ "$1 $2 $3" = "developer dvt launch" ]; then
@@ -69,6 +78,7 @@ drive() {
   OUT=$(cd "$tmp/proj" && env HOME="$tmp/home" PATH="$tmp/bin:$PATH" \
     STUB_LOG="$tmp/log" STUB_STREAM="$tmp/stream.txt" STUB_PROCLIST="$tmp/proclist.json" \
     STUB_BID=com.example.app STUB_APPLIST="${STUB_APPLIST:-}" \
+    STUB_APPLIST_TEXT="${STUB_APPLIST_TEXT:-}" \
     STUB_LAUNCH_SLEEP="${STUB_LAUNCH_SLEEP:-0}" \
     timeout "$cutoff" bash "$script" --rsd 127.0.0.1 65002 App.ipa "$@" 2>&1)
   RC=$?
@@ -136,6 +146,18 @@ has "$OUT" "--console" "row 9 usage lists --console"
 echo "== row 10: bare --console accepted"
 drive "$DEVICE_RUN" 60 --console
 [ "$RC" = 0 ] && ok "row 10 bare --console exit 0" || bad "row 10 exit $RC, want 0"
+
+echo "== row 11: apps list goes to the rsd address"
+drive "$DEVICE_RUN" 60 --console 5
+has "$(cat "$tmp/log")" "apps list --rsd 127.0.0.1 65002" "row 11 apps list carries the rsd args"
+has "$OUT" "running after 5 s: yes" "row 11 console reports after the list"
+
+echo "== row 12: non-JSON apps list fails clearly"
+STUB_APPLIST_TEXT='ERROR: not json' drive "$DEVICE_RUN" 60 --console 5
+[ "$RC" != 0 ] && ok "row 12 non-zero exit ($RC)" || bad "row 12 exit 0, want non-zero"
+has "$OUT" "apps list did not return JSON" "row 12 clear error text"
+not_has "$OUT" "Traceback" "row 12 no Python traceback"
+not_has "$OUT" "JSONDecodeError" "row 12 no JSONDecodeError text"
 
 echo "== mutant M1: drop the timeout (row 2 must fail)"
 sed 's/timeout "$CONSOLE_SECS" "\$PMD3" developer dvt launch/"$PMD3" developer dvt launch/' \

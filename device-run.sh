@@ -157,11 +157,17 @@ stop_forwarder() {
 }
 
 # xtool may prefix the bundle id (XTL-<team>.<id>); print the installed one, or nothing.
+# Extra arguments are the connection: --rsd HOST PORT for rsd and tailnet mode.
 installed_bid() {
-  "$PMD3" apps list "${UDID_ARGS[@]}" 2>/dev/null | python3 -c '
+  local b=$1; shift
+  "$PMD3" apps list "${UDID_ARGS[@]}" "$@" 2>/dev/null | python3 -c '
 import json, sys
 b = sys.argv[1]
-print(next((k for k in json.load(sys.stdin) if k == b or k.endswith("." + b)), ""))' "$1"
+try:
+    apps = json.load(sys.stdin)
+except ValueError:
+    sys.exit("apps list did not return JSON; check the --rsd or --udid arguments")
+print(next((k for k in apps if k == b or k.endswith("." + b)), ""))' "$b"
 }
 
 # Mount the DDI, open an RSD tunnel, give LLDB the phone's Swift runtime on disk, stop the app,
@@ -337,7 +343,7 @@ print(json.load(sys.stdin)[sys.argv[1]]["Path"])' "$bid")
 console_run() {
   local bid=$1 ibid stream rc pid run fatal
   # Our own app only: stream the app this run installed, not a same-named app already there.
-  ibid=$(installed_bid "$bid")
+  ibid=$(installed_bid "$bid" --rsd "$RSD_HOST" "$RSD_PORT")
   if [ -z "$ibid" ]; then
     echo "Refusing to stream: $bid is not the bundle id this run installed." >&2
     return 1
