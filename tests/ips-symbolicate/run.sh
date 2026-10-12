@@ -2,8 +2,9 @@
 # Test for tools/ips-symbolicate.py on synthetic data only.
 # Builds a hand-written .ips report and minimal Python-assembled arm64 Mach-O
 # fixtures, then checks: summary lines, local resolution by LC_UUID, the
-# mismatch message, bad-file exit codes, fat slice selection, and two mutation
-# checks (off-by-one nearest symbol, resolve against the wrong image).
+# mismatch message, bad-file exit codes, fat slice selection, skipping of
+# data and STAB symbols, matching every arm64 slice of a fat file, single
+# spawn of swift-demangle per distinct symbol, and five mutation checks.
 set -uo pipefail
 here=$(dirname "$(readlink -f "$0")")
 repo=$here/../..
@@ -123,6 +124,73 @@ if ! grep -q "resolved locally" "$tmp/mut2.txt" \
 else
   row "mutation 2 (wrong image) breaks the resolution row" 1
 fi
+
+# 8. A data symbol below the frame is not a resolve candidate. The frame sits
+# between appmain (0x100) and the __data constant appconst (0x1c0); only the
+# function may win.
+python3 "$tool" "$tmp/crash.ips" --binary "$tmp/DemoAppData" >"$tmp/out6.txt" 2>/dev/null
+grep -qxF "  3  DemoApp  appmain+0xe8 [resolved locally]" "$tmp/out6.txt"
+row "data symbol in __data skipped, nearest function resolves" $?
+if grep -q "appconst" "$tmp/out6.txt"; then r=1; else r=0; fi
+row "data symbol name never reported" $r
+
+# 9. A fat file with arm64 and arm64e slices: both LC_UUIDs are searchable.
+python3 "$tool" "$tmp/fat2.ips" --binary "$tmp/fat2-DemoApp" >"$tmp/out7.txt" 2>/dev/null
+grep -qxF "  0  DemoApp  appfunc+0x0 [resolved locally]" "$tmp/out7.txt"
+row "fat file: frame resolves against the second arm64 slice" $?
+
+# 10. swift-demangle runs once per distinct symbol; absent demangler passes
+# the mangled name through.
+mkdir "$tmp/bin"
+printf '#!/bin/sh\necho ran >> "$DEMCOUNT"\ncat\n' >"$tmp/bin/swift-demangle"
+chmod +x "$tmp/bin/swift-demangle"
+python3_bin=$(command -v python3)
+DEMCOUNT="$tmp/demcount" PATH="$tmp/bin:$PATH" \
+  python3 "$tool" "$tmp/crash.ips" --binary "$tmp/SwiftApp" >"$tmp/out8.txt" 2>/dev/null
+grep -qxF '  1  DemoApp  $s7DemoApp3runF+0x0 [resolved locally]' "$tmp/out8.txt"
+row "mangled symbol resolves through the stub demangler" $?
+grep -qxF '  3  DemoApp  appmain+0xe8 [resolved locally]' "$tmp/out8.txt"
+row "unmangled neighbor still resolves beside the mangled one" $?
+[ -f "$tmp/demcount" ] && [ "$(wc -l <"$tmp/demcount")" -eq 1 ]
+row "same mangled symbol demangles exactly once" $?
+PATH=/usr/bin:/bin "$python3_bin" "$tool" "$tmp/crash.ips" \
+  --binary "$tmp/SwiftApp" >"$tmp/out9.txt" 2>/dev/null
+grep -qxF '  1  DemoApp  $s7DemoApp3runF+0x0 [resolved locally]' "$tmp/out9.txt"
+row "absent swift-demangle keeps the mangled name" $?
+
+# 7c. Mutation: accept every sectioned symbol (the old behavior).
+cp "$tool" "$tmp/mut3.py"
+mutate "$tmp/mut3.py" \
+  "or not sections[n_sect - 1] & EXE_SECTION_FLAGS:" "or not n_value:"
+python3 "$tmp/mut3.py" "$tmp/crash.ips" --binary "$tmp/DemoAppData" \
+  >"$tmp/mut3.txt" 2>/dev/null
+if grep -q "appconst" "$tmp/mut3.txt" \
+   && ! grep -qxF "  3  DemoApp  appmain+0xe8 [resolved locally]" "$tmp/mut3.txt"; then
+  row "mutation 3 (data symbol accepted) breaks the data-symbol row" 0
+else
+  row "mutation 3 (data symbol accepted) breaks the data-symbol row" 1
+fi
+
+# 7d. Mutation: match only the first arm64 slice.
+cp "$tool" "$tmp/mut4.py"
+mutate "$tmp/mut4.py" "for uuid, syms in results:" "for uuid, syms in results[:1]:"
+python3 "$tmp/mut4.py" "$tmp/fat2.ips" --binary "$tmp/fat2-DemoApp" \
+  >"$tmp/mut4.txt" 2>/dev/null
+if grep -qF "[no local binary for DemoApp BBCCDDEE-1122-3344-5566-778899AABBCC]" "$tmp/mut4.txt" \
+   && ! grep -q "resolved locally" "$tmp/mut4.txt"; then
+  row "mutation 4 (first slice only) breaks the second-slice row" 0
+else
+  row "mutation 4 (first slice only) breaks the second-slice row" 1
+fi
+
+# 7e. Mutation: skip the demangle cache.
+cp "$tool" "$tmp/mut5.py"
+mutate "$tmp/mut5.py" "hit = _demangle_cache.get(name)" "hit = None"
+DEMCOUNT="$tmp/demcount2" PATH="$tmp/bin:$PATH" \
+  python3 "$tmp/mut5.py" "$tmp/crash.ips" --binary "$tmp/SwiftApp" \
+  >"$tmp/mut5.txt" 2>/dev/null
+[ -f "$tmp/demcount2" ] && [ "$(wc -l <"$tmp/demcount2")" -eq 2 ]
+row "mutation 5 (no cache) breaks the single-call row" $?
 
 [ "$fail" -eq 0 ] && echo "tests/ips-symbolicate: all checks passed"
 exit "$fail"
