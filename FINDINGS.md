@@ -1650,3 +1650,69 @@ error: the upload never finishes. `sdk-free/flutter-build.sh` apps that will be
 shipped therefore need a single-size appiconset (the default in current Flutter
 templates is multi-size; see `sdk-free/ship.sh` and the 2026-10-09 TestFlight
 receipt).
+
+## A Rust static library in an xtool app: duplicate compiler-rt symbols, 2026-10-13
+
+Reported by a user, not reproduced here. The user listed Swift 6.4, the Xcode
+27.0 SDK (27A266a), and full mode.
+
+**69. Linking a Rust static library into an xtool app fails with duplicate
+compiler-rt symbols; deleting the compiler_builtins members from the archive
+fixes the link.** `cargo rustc --crate-type staticlib` puts the C sources of
+compiler-rt into the archive. `compiler_builtins` names those members
+`<16 hex>-<name>.o` (144 of them in the report). The iOS link also pulls
+`libclang_rt.ios.a`, which defines the same symbols, so `ld64.lld` fails:
+
+```
+ld64.lld: error: duplicate symbol: __muldc3
+>>> defined in muldc3.c:19 (./lib/builtins/muldc3.c:19)
+>>>            .../lib<crate>.a(<16 hex>-muldc3.o)
+>>> defined in .../libclang_rt.ios.a(muldc3.c.o)
+ld64.lld: error: duplicate symbol: __aarch64_have_lse_atomics
+ld64.lld: error: duplicate symbol: atomic_flag_clear
+... (too many errors emitted)
+```
+
+Apple's ld64 tolerates duplicate symbols across archives. `ld64.lld` rejects
+them. The reporter deleted the duplicated members before packaging the
+archive. A `-sqlite3.o` member from a cc build shared the name shape, so the
+reporter kept it by hand. Run `llvm-ranlib` afterwards. The symbols then
+resolve from `libclang_rt.ios.a`. The user's app then linked, passed
+`ship.sh` (40 of 40 checks), and ran from TestFlight.
+
+Other cc-built members in the same archive use the same shape, so the name
+alone is not a safe test. The filter below is our refinement. It deletes a
+member only when the member defines global symbols and every one of them is
+also defined in `libclang_rt.ios.a`. It was checked here on small scratch
+archives only, not on a Rust build:
+
+```sh
+# lib.a is the Rust staticlib.
+# The linker prints the libclang_rt.ios.a path in the duplicate-symbol error.
+LIBCLANG_RT=<path of libclang_rt.ios.a from the duplicate-symbol error line>
+tmp=$(mktemp -d)
+llvm-nm --defined-only --extern-only "$LIBCLANG_RT" \
+  | awk 'NF>=3 {print $NF}' | sort -u > "$tmp/rt"
+for m in $(llvm-ar t lib.a); do
+  llvm-ar p lib.a "$m" > "$tmp/m.o"
+  llvm-nm --defined-only --extern-only "$tmp/m.o" \
+    | awk 'NF>=3 {print $NF}' | sort -u > "$tmp/m"
+  # Keep the member unless it defines symbols and every one is a duplicate.
+  if [ -s "$tmp/m" ] && ! comm -23 "$tmp/m" "$tmp/rt" | grep -q .; then
+    llvm-ar d lib.a "$m"
+  fi
+done
+llvm-ranlib lib.a
+rm -r "$tmp"
+```
+
+Two more notes for a Rust user on Linux:
+
+- Build only the staticlib. A `cdylib` in `crate-type` makes a plain
+  `cargo build` fail, because the cdylib link needs Apple's ld64.
+- `cc-rs` finds the iOS SDK through `SDKROOT`; without it the build runs
+  `xcrun`. Set `SDKROOT`, `CC_aarch64_apple_ios=clang`,
+  `AR_aarch64_apple_ios=llvm-ar`, and
+  `CFLAGS_aarch64_apple_ios="--target=arm64-apple-ios17.0 -isysroot $SDK"`.
+  `$SDK` comes from `swift sdk configure --show-configuration darwin
+  arm64-apple-ios`.
