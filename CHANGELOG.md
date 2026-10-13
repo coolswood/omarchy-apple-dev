@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- FINDINGS.md gains an entry on linking a Rust static library into an xtool app. The Rust archive's `compiler_builtins` members duplicate symbols in `libclang_rt.ios.a`, `ld64.lld` rejects the duplicates, and the entry gives an `llvm-ar` member filter that deletes them. Reported by a user, not reproduced here.
+
 ### Device console
 
 - `device-run.sh --rsd` and `--over-tailnet` take `--console [SECONDS]`. After the install it streams the

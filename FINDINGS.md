@@ -1650,3 +1650,58 @@ error: the upload never finishes. `sdk-free/flutter-build.sh` apps that will be
 shipped therefore need a single-size appiconset (the default in current Flutter
 templates is multi-size; see `sdk-free/ship.sh` and the 2026-10-09 TestFlight
 receipt).
+
+## A Rust static library in an xtool app: duplicate compiler-rt symbols, 2026-10-13
+
+Reported by a user, not reproduced here. The user listed Swift 6.4, the Xcode
+27.0 SDK (27A266a), and full mode.
+
+**69. Linking a Rust static library into an xtool app fails with duplicate
+compiler-rt symbols; deleting the compiler_builtins members from the archive
+fixes the link.** `cargo rustc --crate-type staticlib` puts the C sources of
+compiler-rt into the archive. `compiler_builtins` names those members
+`<16 hex>-<name>.o` (144 of them in the report). The iOS link also pulls
+`libclang_rt.ios.a`, which defines the same symbols, so `ld64.lld` fails:
+
+```
+ld64.lld: error: duplicate symbol: __muldc3
+>>> defined in muldc3.c:19 (./lib/builtins/muldc3.c:19)
+>>>            .../lib<crate>.a(<16 hex>-muldc3.o)
+>>> defined in .../libclang_rt.ios.a(muldc3.c.o)
+ld64.lld: error: duplicate symbol: __aarch64_have_lse_atomics
+ld64.lld: error: duplicate symbol: atomic_flag_clear
+... (too many errors emitted)
+```
+
+Apple's ld64 tolerates duplicate symbols across archives. `ld64.lld` rejects
+them. The fix is to delete exactly those members before packaging the archive.
+Keep other cc-built members that share the name shape: the same archive also
+carried a `-sqlite3.o` member from a cc build, and the filter must keep it.
+Run `llvm-ranlib` afterwards. The symbols then resolve from
+`libclang_rt.ios.a`. The user's app then linked, passed `ship.sh` (40 of 40
+checks), and ran from TestFlight.
+
+A generic member filter. It was checked here on a small scratch archive only,
+not on a Rust build:
+
+```sh
+# Drop the Rust compiler_builtins members (<16 hex>-<name>.o) from lib.a.
+# Keep cc-built members that share the name shape, such as -sqlite3.o.
+keep='sqlite3'
+llvm-ar t lib.a \
+  | grep -E '^[0-9a-f]{16}-' \
+  | grep -v -- "-${keep}\.o$" \
+  | xargs -r llvm-ar d lib.a
+llvm-ranlib lib.a
+```
+
+Two more notes for a Rust user on Linux:
+
+- Build only the staticlib. A `cdylib` in `crate-type` makes a plain
+  `cargo build` fail, because the cdylib link needs Apple's ld64.
+- `cc-rs` finds the iOS SDK through `SDKROOT`; without it the build runs
+  `xcrun`. Set `SDKROOT`, `CC_aarch64_apple_ios=clang`,
+  `AR_aarch64_apple_ios=llvm-ar`, and
+  `CFLAGS_aarch64_apple_ios="--target=arm64-apple-ios17.0 -isysroot $SDK"`.
+  `$SDK` comes from `swift sdk configure --show-configuration darwin
+  arm64-apple-ios`.
