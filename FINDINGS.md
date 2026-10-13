@@ -1674,25 +1674,35 @@ ld64.lld: error: duplicate symbol: atomic_flag_clear
 ```
 
 Apple's ld64 tolerates duplicate symbols across archives. `ld64.lld` rejects
-them. The fix is to delete exactly those members before packaging the archive.
-Keep other cc-built members that share the name shape: the same archive also
-carried a `-sqlite3.o` member from a cc build, and the filter must keep it.
-Run `llvm-ranlib` afterwards. The symbols then resolve from
-`libclang_rt.ios.a`. The user's app then linked, passed `ship.sh` (40 of 40
-checks), and ran from TestFlight.
+them. The reporter deleted the duplicated members before packaging the
+archive. A `-sqlite3.o` member from a cc build shared the name shape, so the
+reporter kept it by hand. Run `llvm-ranlib` afterwards. The symbols then
+resolve from `libclang_rt.ios.a`. The user's app then linked, passed
+`ship.sh` (40 of 40 checks), and ran from TestFlight.
 
-A generic member filter. It was checked here on a small scratch archive only,
-not on a Rust build:
+Other cc-built members in the same archive use the same shape, so the name
+alone is not a safe test. The filter below is our refinement. It deletes a
+member only when the member defines global symbols and every one of them is
+also defined in `libclang_rt.ios.a`. It was checked here on small scratch
+archives only, not on a Rust build:
 
 ```sh
-# Drop the Rust compiler_builtins members (<16 hex>-<name>.o) from lib.a.
-# Keep cc-built members that share the name shape, such as -sqlite3.o.
-keep='sqlite3'
-llvm-ar t lib.a \
-  | grep -E '^[0-9a-f]{16}-' \
-  | grep -v -- "-${keep}\.o$" \
-  | xargs -r llvm-ar d lib.a
+# lib.a is the Rust staticlib. $SDK comes from the swift sdk configuration.
+LIBCLANG_RT=$SDK/usr/lib/swift/clang/lib/darwin/libclang_rt.ios.a
+tmp=$(mktemp -d)
+llvm-nm --defined-only --extern-only "$LIBCLANG_RT" \
+  | awk 'NF>=3 {print $NF}' | sort -u > "$tmp/rt"
+for m in $(llvm-ar t lib.a); do
+  llvm-ar p lib.a "$m" > "$tmp/m.o"
+  llvm-nm --defined-only --extern-only "$tmp/m.o" \
+    | awk 'NF>=3 {print $NF}' | sort -u > "$tmp/m"
+  # Keep the member unless it defines symbols and every one is a duplicate.
+  if [ -s "$tmp/m" ] && ! comm -23 "$tmp/m" "$tmp/rt" | grep -q .; then
+    llvm-ar d lib.a "$m"
+  fi
+done
 llvm-ranlib lib.a
+rm -r "$tmp"
 ```
 
 Two more notes for a Rust user on Linux:
