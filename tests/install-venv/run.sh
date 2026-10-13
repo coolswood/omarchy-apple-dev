@@ -33,6 +33,7 @@ fake_python() { # DIR VERSION
 #!/usr/bin/env bash
 case "${1:-}" in
   --version) echo "Python @VER@"; exit 0 ;;
+  -c) printf '%s\n' "$(readlink -f -- "$0")"; exit 0 ;;
   -m)
     [ "$2" = "venv" ] || exit 2
     venv=$3
@@ -70,6 +71,14 @@ esac
 exit 2
 EOF
   chmod +x "$1/python3"
+}
+
+fake_shim() { # LOCATION TARGET: a mise-style shim; the -c probe names the target
+  { printf '#!/usr/bin/env bash\n'
+    printf 'if [ "${1:-}" = "-c" ]; then\n  printf "%%s\\n" "%s"\n  exit 0\nfi\n' "$2"
+    printf 'echo "fake mise: unexpected argument ${1:-}" >&2\nexit 1\n'
+  } >"$1"
+  chmod +x "$1"
 }
 
 home= fpath= venv_dir= rmode= rmodefile= swiftdir=
@@ -255,6 +264,67 @@ check_guard() { # the rm guard refuses anything outside a safe venv path
   ok "guard: empty, relative, outside-HOME, HOME itself, and HOME/.. refused"
 }
 
+check_home_symlink() { # HOME is a symlink to the real dir: first install reaches creation
+  local block=$1 out rc link orig
+  new_world
+  orig=$home
+  link="$home/homelink"
+  ln -s "$home" "$link"
+  home="$link"
+  venv_dir="$home/pymobile3-venv"
+  out=$(run_helpers "$block" "venv_ensure" "$home" "$venv_dir")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then bad "home-symlink" "rc $rc: $out"; return 1; fi
+  if ! grep -qF "home = $orig/tools/py3.14/bin" "$venv_dir/pyvenv.cfg"; then
+    bad "home-symlink" "venv not created: $(cat "$venv_dir/pyvenv.cfg" 2>/dev/null)"
+    return 1
+  fi
+  ok "home-symlink: symlinked HOME reaches venv creation"
+}
+
+check_home_slash() { # HOME ends in a slash: first install reaches creation
+  local block=$1 out rc orig
+  new_world
+  orig=$home
+  home="$home/"
+  venv_dir="$home/pymobile3-venv"
+  out=$(run_helpers "$block" "venv_ensure" "$home" "$venv_dir")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then bad "home-slash" "rc $rc: $out"; return 1; fi
+  if ! grep -qF "home = $orig/tools/py3.14/bin" "$venv_dir/pyvenv.cfg"; then
+    bad "home-slash" "venv not created: $(cat "$venv_dir/pyvenv.cfg" 2>/dev/null)"
+    return 1
+  fi
+  ok "home-slash: HOME with a trailing slash reaches venv creation"
+}
+
+check_shim_resolved() { # python3 is a mise-style shim: create from the real interpreter
+  local block=$1 out rc
+  new_world
+  rm "$home/tools/latest/bin/python3"
+  fake_shim "$home/tools/latest/bin/python3" "$home/tools/py3.14/bin/python3"
+  out=$(run_helpers "$block" "venv_ensure" "$home" "$venv_dir")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then bad "shim" "rc $rc: $out"; return 1; fi
+  if [ "$(cat "$venv_dir/.creator")" != "$home/tools/py3.14/bin/python3" ]; then
+    bad "shim" "creator is $(cat "$venv_dir/.creator")"
+    return 1
+  fi
+  if ! grep -qF "home = $home/tools/py3.14/bin" "$venv_dir/pyvenv.cfg"; then
+    bad "shim" "pyvenv.cfg not from the real interpreter: $(cat "$venv_dir/pyvenv.cfg" 2>/dev/null)"
+    return 1
+  fi
+  case "$out" in
+    *"$home/tools/py3.14/bin/python3"*) ;;
+    *) bad "shim" "real interpreter path not printed: $out"; return 1 ;;
+  esac
+  case "$out" in
+    *"Python 3.14.0"*) ;;
+    *) bad "shim" "version not printed: $out"; return 1 ;;
+  esac
+  ok "shim: mise-style shim resolves to the real interpreter"
+}
+
 row_fails() { # FN BLOCK: true when the row fails; row temp dirs stay cleanable
   local fn=$1 blk=$2 holder
   holder=$(tmpworld)
@@ -393,12 +463,12 @@ check_repair_full_rebuilds() { # full mode: repair still rebuilds a broken venv
 check_mutations() { # HELPER-BLOCK REPAIR-BLOCK: the suite must catch the bugs it exists for
   local mblock
   mblock=$(tmpworld)/mutated.sh
-  # Creation without readlink -f bakes in the symlink (the reported bug).
-  sed 's|readlink -f "$(command -v python3)"|command -v python3|' "$1" >"$mblock"
+  # Creation from the PATH entry bakes in a shim or symlink (the review bug).
+  sed 's|py=$("$(command -v python3)" -c .*|py=$(command -v python3)|' "$1" >"$mblock"
   if row_fails check_resolved "$mblock"; then
     ok "mutation-readlink: caught"
   else
-    bad "mutation-readlink" "suite did not catch symlink-based creation"
+    bad "mutation-readlink" "suite did not catch shim-based creation"
   fi
   # A neutered health check leaves a broken venv in place.
   sed 's/^venv_healthy() {/venv_healthy() { return 0 #/' "$1" >"$mblock"
@@ -413,6 +483,13 @@ check_mutations() { # HELPER-BLOCK REPAIR-BLOCK: the suite must catch the bugs i
     ok "mutation-guard: caught"
   else
     bad "mutation-guard" "suite did not catch an opened rm guard"
+  fi
+  # Comparing the resolved venv with the raw HOME refuses a symlinked HOME.
+  sed 's|"\$home"/?\*|"\$HOME"/?*|' "$1" >"$mblock"
+  if row_fails check_home_symlink "$mblock"; then
+    ok "mutation-home: caught"
+  else
+    bad "mutation-home" "suite did not catch an unresolved HOME compare"
   fi
   # The venv check must run before the no-xcode exec, not after the SDK work.
   sed '/^  venv_ensure /d' "$2" >"$mblock"
@@ -439,6 +516,9 @@ check_resolved "$block"
 check_healthy_kept "$block"
 check_unhealthy_rebuilt "$block"
 check_guard "$block"
+check_home_symlink "$block"
+check_home_slash "$block"
+check_shim_resolved "$block"
 check_repair_no_xcode_explicit "$rblock"
 check_repair_no_xcode_saved "$rblock"
 check_repair_no_xcode_healthy "$rblock"

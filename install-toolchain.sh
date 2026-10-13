@@ -44,22 +44,30 @@ venv_healthy() {
 
 venv_create() {
   local py
-  py=$(readlink -f "$(command -v python3)")
+  command -v python3 >/dev/null || {
+    echo "python3 not found on PATH. Install python, then re-run." >&2
+    return 1
+  }
+  # Ask the interpreter for its own real path. A mise shim is a symlink to the
+  # mise binary, so readlink of PATH would hand us mise instead of python.
+  py=$("$(command -v python3)" -c 'import os,sys; print(os.path.realpath(sys.executable))')
   echo "venv python: $py ($("$py" --version 2>&1))"
   "$py" -m venv "$VENV"
   "$VENV/bin/pip" install pymobiledevice3
   "$VENV/bin/pip" show pymobiledevice3 | sed -n 's/^Version: /pymobiledevice3 /p'
 }
 
-venv_path_ok() { # the raw string and the resolved path must both sit under $HOME
+venv_path_ok() { # the raw string and the resolved path must both sit under HOME
+  local home
   case "$1" in "$HOME"/?*) ;; *) return 1 ;; esac
-  case "$(readlink -f -- "$1" 2>/dev/null)" in "$HOME"/?*) ;; *) return 1 ;; esac
+  home=$(readlink -f -- "$HOME") || return 1
+  case "$(readlink -f -- "$1" 2>/dev/null)" in "$home"/?*) ;; *) return 1 ;; esac
 }
 
 venv_reset() { # rm only after the guard passes; then rebuild and reinstall
   if ! venv_path_ok "$VENV"; then
     echo "refusing to remove '$VENV': not a non-empty absolute path under \$HOME" >&2
-    exit 1
+    return 1
   fi
   rm -rf -- "$VENV"
   venv_create

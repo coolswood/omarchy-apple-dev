@@ -68,3 +68,22 @@ while setup still runs. A full-mode repair still rebuilds. On commit 16109fb5 th
 and `repair-saved` fail: the order log holds `setup` alone, so the rebuild never ran. A fourth in-suite
 mutation deletes the early call, and `repair-explicit` catches it. `bash tests/run.sh` ends `all checks
 passed` on the Linux host.
+
+Second follow-up (same day, review RED at 30e1a2f and CHANGES at 91891c8e): two regressions, both fixed.
+
+- The guard compared the resolved venv path with the raw `$HOME`. A symlinked `$HOME`, or a `$HOME` with a
+  trailing slash, made the first install refuse. `venv_path_ok` now resolves `$HOME` too and compares the
+  resolved venv path with the resolved `$HOME`. New rows: `home-symlink` and `home-slash` reach venv
+  creation. The five refusal cases still refuse. A new mutation compares against the raw `$HOME` again,
+  and `home-symlink` catches it.
+- `readlink -f "$(command -v python3)"` returns the mise binary when `python3` is a mise shim, and the
+  script ran `mise -m venv`. `venv_create` now asks the interpreter for its own real path with
+  `python3 -c 'import os,sys; print(os.path.realpath(sys.executable))'`. The stub interpreter gained a
+  `-c` branch, and a new `shim` row runs creation through a fake mise-style shim: the venv is created by
+  the real stub interpreter, never by the shim. The readlink mutation now swaps the probe for the raw
+  PATH entry, and `resolved` catches it.
+
+Optional review items also taken: `venv_create` prints `python3 not found on PATH` and returns 1 when
+there is no `python3`, and `venv_reset` returns 1 instead of calling `exit` inside the helper. Not taken:
+re-running `venv_healthy` after `venv_create`; that one stayed open with the reviewer. The suite is now
+15 rows and 5 mutation checks, all against stubs. `bash tests/run.sh` ends `all checks passed`.
