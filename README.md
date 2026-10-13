@@ -195,6 +195,12 @@ survive-status summary: SDK source used, pairing location, auth state. It
 exits nonzero with instructions when the cache is missing and no `XCODE_XIP`
 is given.
 
+`--repair` also checks the pymobiledevice3 venv in `~/pymobile3-venv`. When
+its packages no longer import, it removes the venv and rebuilds it against
+the interpreter on PATH. The venv is always created from the resolved
+interpreter path, never from the `latest` symlink, so a toolchain move cannot
+strand the installed packages.
+
 ## First app
 
 ```

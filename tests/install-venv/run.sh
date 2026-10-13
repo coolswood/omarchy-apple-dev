@@ -1,0 +1,274 @@
+#!/usr/bin/env bash
+# Checks the pymobiledevice3 venv install: created from the resolved
+# interpreter, kept while healthy, rebuilt when unhealthy. It sources only the
+# venv helper functions from install-toolchain.sh. Interpreters, venvs, and pip
+# are stubs. No network and no real venv build.
+set -uo pipefail
+here=$(dirname "$(readlink -f "$0")")
+script=${INSTALLER:-$here/../../install-toolchain.sh}
+fail=0
+CLEANUP=()
+tmpworld() { # new temp dir, registered for cleanup
+  local d
+  d=$(mktemp -d)
+  CLEANUP+=("$d")
+  printf '%s\n' "$d"
+}
+cleanup() {
+  local p
+  for p in "${CLEANUP[@]:-}"; do
+    [ -n "$p" ] && rm -rf -- "$p"
+  done
+}
+trap cleanup EXIT
+ok() { echo "ok   $1"; }
+bad() { echo "FAIL $1: $2"; fail=1; }
+
+# Stub python3. "--version" prints its version. "-m venv DIR" lays out a stub
+# venv: its python imports packages only while DIR/.imports_ok exists, its pip
+# records installs there, and creation appends the invoked path to $FAKE_LOG.
+fake_python() { # DIR VERSION
+  mkdir -p "$1"
+  sed "s/@VER@/$2/" >"$1/python3" <<'EOF'
+#!/usr/bin/env bash
+case "${1:-}" in
+  --version) echo "Python @VER@"; exit 0 ;;
+  -m)
+    [ "$2" = "venv" ] || exit 2
+    venv=$3
+    mkdir -p "$venv/bin"
+    printf 'home = %s\n' "$(dirname "$0")" >"$venv/pyvenv.cfg"
+    printf '%s\n' "$0" >"$venv/.creator"
+    printf '%s\n' "$0" >>"$FAKE_LOG"
+    cat >"$venv/bin/python" <<'VENV'
+#!/usr/bin/env bash
+d=$(cd "$(dirname "$0")/.." && pwd)
+[ -f "$d/.imports_ok" ] && exit 0
+echo "ModuleNotFoundError: No module named 'pymobiledevice3'" >&2
+exit 1
+VENV
+    cat >"$venv/bin/pip" <<'PIP'
+#!/usr/bin/env bash
+d=$(cd "$(dirname "$0")/.." && pwd)
+case "${1:-}" in
+  install)
+    touch "$d/.imports_ok"
+    echo pymobiledevice3 >"$d/.installed"
+    n=$(cat "$d/.pip_runs" 2>/dev/null || echo 0)
+    echo $((n + 1)) >"$d/.pip_runs"
+    exit 0 ;;
+  show)
+    [ -f "$d/.installed" ] && { echo "Version: 11.26.0"; exit 0; }
+    echo "no package metadata" >&2
+    exit 1 ;;
+esac
+exit 2
+PIP
+    chmod +x "$venv/bin/python" "$venv/bin/pip"
+    exit 0 ;;
+esac
+exit 2
+EOF
+  chmod +x "$1/python3"
+}
+
+home= fpath= venv_dir=
+new_world() { # fake toolchain: latest -> py3.14, re-pointable to py3.15
+  home=$(tmpworld)
+  fake_python "$home/tools/py3.14/bin" 3.14.0
+  fake_python "$home/tools/py3.15/bin" 3.15.0
+  mkdir -p "$home/tools/latest/bin"
+  ln -s "$home/tools/py3.14/bin/python3" "$home/tools/latest/bin/python3"
+  fpath="$home/tools/latest/bin"
+  venv_dir="$home/pymobile3-venv"
+  : >"$home/creates.log"
+}
+repin() { # the toolchain update: latest now points at the new minor
+  ln -sfn "$home/tools/py3.15/bin/python3" "$home/tools/latest/bin/python3"
+}
+run_helpers() { # BLOCK SNIPPET WORKDIR VENV: source the helpers, run a snippet
+  env HOME="$home" PATH="$fpath:$PATH" FAKE_LOG="$home/creates.log" bash -c '
+    set -uo pipefail
+    cd "$3" || exit 9
+    source "$1"
+    VENV="$4"
+    eval "$2"
+  ' _ "$1" "$2" "$3" "$4" 2>&1
+}
+refused() { # NAME RC OUTPUT TARGET: the guard must refuse and keep the target
+  local name=$1 rc=$2 out=$3 target=${4:-}
+  if [ "$rc" -eq 0 ]; then bad "$name" "not refused (rc 0): $out"; return 1; fi
+  case "$out" in
+    *"refusing to remove"*) ;;
+    *) bad "$name" "no refusal message: $out"; return 1 ;;
+  esac
+  if [ -n "$target" ] && [ ! -e "$target" ]; then
+    bad "$name" "target was removed"
+    return 1
+  fi
+  return 0
+}
+
+check_resolved() { # fresh install: the venv records the resolved interpreter
+  local block=$1 out rc
+  new_world
+  out=$(run_helpers "$block" "venv_ensure" "$home" "$venv_dir")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then bad "resolved" "venv_ensure rc $rc: $out"; return 1; fi
+  if ! grep -qF "home = $home/tools/py3.14/bin" "$venv_dir/pyvenv.cfg"; then
+    bad "resolved" "pyvenv.cfg lacks the real interpreter dir: $(cat "$venv_dir/pyvenv.cfg" 2>/dev/null)"
+    return 1
+  fi
+  if grep -qF "latest" "$venv_dir/pyvenv.cfg"; then
+    bad "resolved" "pyvenv.cfg names the symlink"
+    return 1
+  fi
+  if [ "$(cat "$venv_dir/.creator")" != "$home/tools/py3.14/bin/python3" ]; then
+    bad "resolved" "creator is $(cat "$venv_dir/.creator")"
+    return 1
+  fi
+  case "$out" in
+    *"$home/tools/py3.14/bin/python3"*) ;;
+    *) bad "resolved" "interpreter path not printed: $out"; return 1 ;;
+  esac
+  case "$out" in
+    *"Python 3.14.0"*) ;;
+    *) bad "resolved" "version not printed: $out"; return 1 ;;
+  esac
+  ok "resolved: created from the resolved interpreter, path and version printed"
+}
+
+check_healthy_kept() { # healthy venv survives a toolchain swap untouched
+  local block=$1 out rc
+  new_world
+  run_helpers "$block" "venv_ensure" "$home" "$venv_dir" >/dev/null
+  if [ "$(wc -l <"$home/creates.log")" != 1 ]; then
+    bad "kept" "setup did not create exactly one venv"
+    return 1
+  fi
+  repin
+  out=$(run_helpers "$block" "venv_ensure" "$home" "$venv_dir")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then bad "kept" "rc $rc: $out"; return 1; fi
+  if [ "$(wc -l <"$home/creates.log")" != 1 ]; then
+    bad "kept" "healthy venv was recreated"
+    return 1
+  fi
+  if ! grep -qF "py3.14" "$venv_dir/pyvenv.cfg"; then
+    bad "kept" "venv changed although healthy"
+    return 1
+  fi
+  if [ "$(cat "$venv_dir/.pip_runs")" != 1 ]; then
+    bad "kept" "pip re-ran although healthy"
+    return 1
+  fi
+  ok "kept: healthy venv left alone after the symlink moved"
+}
+
+check_unhealthy_rebuilt() { # broken imports: old venv removed, new one installed
+  local block=$1 out rc
+  new_world
+  run_helpers "$block" "venv_ensure" "$home" "$venv_dir" >/dev/null
+  rm -f "$venv_dir/.imports_ok" # the old interpreter moved; imports fail now
+  mkdir -p "$venv_dir"
+  : >"$venv_dir/stale-marker"
+  repin
+  out=$(run_helpers "$block" "venv_ensure" "$home" "$venv_dir")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then bad "rebuilt" "rc $rc: $out"; return 1; fi
+  if [ "$(wc -l <"$home/creates.log")" != 2 ]; then
+    bad "rebuilt" "expected two creations, log says $(wc -l <"$home/creates.log")"
+    return 1
+  fi
+  if ! grep -qF "home = $home/tools/py3.15/bin" "$venv_dir/pyvenv.cfg"; then
+    bad "rebuilt" "not rebuilt from the new interpreter: $(cat "$venv_dir/pyvenv.cfg" 2>/dev/null)"
+    return 1
+  fi
+  if [ -e "$venv_dir/stale-marker" ]; then
+    bad "rebuilt" "old venv content survived"
+    return 1
+  fi
+  if [ "$(cat "$venv_dir/.pip_runs")" != 1 ]; then
+    bad "rebuilt" "pip did not reinstall into the new venv"
+    return 1
+  fi
+  case "$out" in
+    *"Python 3.15.0"*) ;;
+    *) bad "rebuilt" "new interpreter version not printed: $out"; return 1 ;;
+  esac
+  ok "rebuilt: unhealthy venv removed and rebuilt from the new interpreter"
+}
+
+check_guard() { # the rm guard refuses anything outside a safe venv path
+  local block=$1 out rc other
+  new_world
+  out=$(run_helpers "$block" "venv_reset" "$home" "")
+  rc=$?
+  refused "guard-empty" "$rc" "$out" || return 1
+  mkdir -p "$home/wd"
+  : >"$home/wd/pym3"
+  out=$(run_helpers "$block" "venv_reset" "$home/wd" "pym3")
+  rc=$?
+  refused "guard-relative" "$rc" "$out" "$home/wd/pym3" || return 1
+  other=$(tmpworld)
+  : >"$other/outside"
+  out=$(run_helpers "$block" "venv_reset" "$home" "$other/outside")
+  rc=$?
+  refused "guard-outside-home" "$rc" "$out" "$other/outside" || return 1
+  out=$(run_helpers "$block" "venv_reset" "$home" "$home")
+  rc=$?
+  refused "guard-home-itself" "$rc" "$out" || return 1
+  out=$(run_helpers "$block" "venv_reset" "$home" "$home/../sibling")
+  rc=$?
+  refused "guard-home-dotdot" "$rc" "$out" || return 1
+  ok "guard: empty, relative, outside-HOME, HOME itself, and HOME/.. refused"
+}
+
+row_fails() { # FN BLOCK: true when the row fails; row temp dirs stay cleanable
+  local fn=$1 blk=$2 holder
+  holder=$(tmpworld)
+  ( TMPDIR="$holder"
+    export TMPDIR
+    "$fn" "$blk"
+  ) >/dev/null 2>&1
+  [ $? -ne 0 ]
+}
+
+check_mutations() { # the suite must catch the bugs it exists for
+  local mblock
+  mblock=$(tmpworld)/mutated.sh
+  # Creation without readlink -f bakes in the symlink (the reported bug).
+  sed 's|readlink -f "$(command -v python3)"|command -v python3|' "$1" >"$mblock"
+  if row_fails check_resolved "$mblock"; then
+    ok "mutation-readlink: caught"
+  else
+    bad "mutation-readlink" "suite did not catch symlink-based creation"
+  fi
+  # A neutered health check leaves a broken venv in place.
+  sed 's/^venv_healthy() {/venv_healthy() { return 0 #/' "$1" >"$mblock"
+  if row_fails check_unhealthy_rebuilt "$mblock"; then
+    ok "mutation-health: caught"
+  else
+    bad "mutation-health" "suite did not catch a neutered health check"
+  fi
+  # A guard pattern open to everything removes paths outside HOME.
+  sed 's|"\$HOME"/?\*) ;;|*) ;;|g' "$1" >"$mblock"
+  if row_fails check_guard "$mblock"; then
+    ok "mutation-guard: caught"
+  else
+    bad "mutation-guard" "suite did not catch an opened rm guard"
+  fi
+}
+
+block=$(tmpworld)/block.sh
+sed -n '/^venv_healthy()/,/^# Register the SDK bundle/p' "$script" | sed '$d' >"$block"
+echo "== install-venv: installer=$script"
+if [ ! -s "$block" ]; then
+  echo "note: no venv helpers found; rows will fail (fix not applied?)"
+fi
+check_resolved "$block"
+check_healthy_kept "$block"
+check_unhealthy_rebuilt "$block"
+check_guard "$block"
+check_mutations "$block"
+exit "$fail"

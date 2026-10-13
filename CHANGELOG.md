@@ -2,6 +2,13 @@
 
 ## Unreleased
 
+### Venv repair
+
+- `install-toolchain.sh` creates the pymobiledevice3 venv from the resolved interpreter path, not from a
+  `latest` symlink, and both step 4 and `--repair` rebuild the venv when its packages no longer import. The
+  rebuild removes only the venv directory after a path guard. Covered by stub tests in
+  `tests/install-venv/run.sh`; see `receipts/2026-10-13-venv-resolve.md`.
+
 ### Device console
 
 - `device-run.sh --rsd` and `--over-tailnet` take `--console [SECONDS]`. After the install it streams the

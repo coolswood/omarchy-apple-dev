@@ -35,6 +35,44 @@ VENV="$HOME/pymobile3-venv"
 SDK_SRC="${SDK_SRC:-$HOME/xcode-apple-sdk-src}"
 SDK_CACHE="${SDK_CACHE:-$HOME/.cache/xtool}"
 
+# pymobiledevice3 venv helpers. The venv is built from the interpreter the
+# current shell resolves, never from a mise/asdf "latest" symlink: a symlink
+# moves on every toolchain update and strands the packages inside the venv.
+venv_healthy() {
+  [ -x "$VENV/bin/python" ] && "$VENV/bin/python" -c 'import cryptography, pymobiledevice3' >/dev/null 2>&1
+}
+
+venv_create() {
+  local py
+  py=$(readlink -f "$(command -v python3)")
+  echo "venv python: $py ($("$py" --version 2>&1))"
+  "$py" -m venv "$VENV"
+  "$VENV/bin/pip" install pymobiledevice3
+  "$VENV/bin/pip" show pymobiledevice3 | sed -n 's/^Version: /pymobiledevice3 /p'
+}
+
+venv_path_ok() { # the raw string and the resolved path must both sit under $HOME
+  case "$1" in "$HOME"/?*) ;; *) return 1 ;; esac
+  case "$(readlink -f -- "$1" 2>/dev/null)" in "$HOME"/?*) ;; *) return 1 ;; esac
+}
+
+venv_reset() { # rm only after the guard passes; then rebuild and reinstall
+  if ! venv_path_ok "$VENV"; then
+    echo "refusing to remove '$VENV': not a non-empty absolute path under \$HOME" >&2
+    exit 1
+  fi
+  rm -rf -- "$VENV"
+  venv_create
+}
+
+venv_ensure() { # step 4 and --repair both land here: a healthy venv stays
+  if venv_healthy; then
+    echo "venv ok: $VENV"
+    return 0
+  fi
+  venv_reset
+}
+
 # Register the SDK bundle at $1 into whatever toolchain is first on PATH.
 # swift sdk install refuses to overwrite an existing bundle, so clear it first.
 sdk_install_from() {
@@ -461,6 +499,7 @@ if [ "${1:-}" = "--repair" ]; then
   install_darwin_tools
   install_oam
   survive_status "$cached"
+  venv_ensure # a toolchain move can strand the venv; rebuild it in place
   exit 0
 fi
 
@@ -550,9 +589,7 @@ fi
 "$HOME/.local/bin/ipsw" version | head -n1
 
 echo "== 4. pymobiledevice3 in a venv =="
-python3 -m venv "$VENV"
-"$VENV/bin/pip" install pymobiledevice3
-"$VENV/bin/pip" show pymobiledevice3 | sed -n 's/^Version: /pymobiledevice3 /p'
+venv_ensure
 
 if [ "$MODE" = no-xcode ]; then
   echo "== 5. Build files, no Xcode download (iPhone or Apple's public iOS update)"
