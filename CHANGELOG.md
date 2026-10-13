@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Tests
+
+- `tests/run.sh` now runs every `tests/test_*.py` unittest file. Before, CI ran none of them, so
+  `tests/test_associated_domains.py` and `tests/test_xcstrings_symbols.py` never ran there.
+
 ### Device console
 
 - `device-run.sh --rsd` and `--over-tailnet` take `--console [SECONDS]`. After the install it streams the
