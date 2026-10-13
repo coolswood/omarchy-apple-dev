@@ -1687,8 +1687,9 @@ also defined in `libclang_rt.ios.a`. It was checked here on small scratch
 archives only, not on a Rust build:
 
 ```sh
-# lib.a is the Rust staticlib. $SDK comes from the swift sdk configuration.
-LIBCLANG_RT=$SDK/usr/lib/swift/clang/lib/darwin/libclang_rt.ios.a
+# lib.a is the Rust staticlib.
+# The linker prints the libclang_rt.ios.a path in the duplicate-symbol error.
+LIBCLANG_RT=<path of libclang_rt.ios.a from the duplicate-symbol error line>
 tmp=$(mktemp -d)
 llvm-nm --defined-only --extern-only "$LIBCLANG_RT" \
   | awk 'NF>=3 {print $NF}' | sort -u > "$tmp/rt"
