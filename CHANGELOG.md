@@ -2,6 +2,11 @@
 
 ## Unreleased
 
+### Tests
+
+- `tests/run.sh` now runs every `tests/test_*.py` unittest file. Before, CI ran none of them, so
+  `tests/test_associated_domains.py` and `tests/test_xcstrings_symbols.py` never ran there.
+
 ### Venv repair
 
 - `install-toolchain.sh` creates the pymobiledevice3 venv from the resolved interpreter path, not from a

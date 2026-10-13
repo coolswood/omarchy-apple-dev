@@ -22,6 +22,9 @@ bash tests/xcodeproj2xtool/golden-fixture.sh || fail=1
 echo "== tools/asc.py validate golden"
 python3 tests/asc/golden-validate.py || fail=1
 
+echo "== tests/test_*.py (unittest)"
+python3 -m unittest discover -s tests -p 'test_*.py' || fail=1
+
 echo "== tools/ibmac.py mac golden (src-mac vs golden-mac)"
 bash tests/ibtool/check-golden.sh || fail=1
 
