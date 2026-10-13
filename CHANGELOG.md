@@ -2,7 +2,13 @@
 
 ## Unreleased
 
-- FINDINGS.md gains an entry on linking a Rust static library into an xtool app. The Rust archive's `compiler_builtins` members duplicate symbols in `libclang_rt.ios.a`, `ld64.lld` rejects the duplicates, and the entry gives an `llvm-ar` member filter that deletes them. Reported by a user, not reproduced here.
+### Tests
+
+- `tests/run.sh` now runs every `tests/test_*.py` unittest file. Before, CI ran none of them, so
+  `tests/test_associated_domains.py` and `tests/test_xcstrings_symbols.py` never ran there.
+### Findings
+
+- FINDINGS.md gains an entry on linking a Rust static library into an xtool app. The archive holds C members that duplicate symbols in `libclang_rt.ios.a`, and `ld64.lld` rejects the duplicates. The entry gives an `llvm-ar` and `llvm-nm` filter that deletes a member only when every symbol it defines is also defined in `libclang_rt.ios.a`. Reported by a user, not reproduced here. The filter was checked on scratch archives only.
 
 ### Device console
 
