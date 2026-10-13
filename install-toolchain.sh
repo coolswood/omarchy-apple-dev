@@ -472,6 +472,7 @@ if [ "${1:-}" = "--repair" ]; then
   # reinstall): repair runs against whatever toolchain the current shell
   # resolves, so the SDK is re-registered into THAT toolchain. Pairing and
   # Apple ID auth live in user-global paths and were never affected.
+  venv_ensure # before the mode split: no-xcode repair needs the venv too
   if [ "$MODE" = no-xcode ] || { [ -z "$MODE" ] && [ "$(cat "$MODE_FILE" 2>/dev/null || true)" = no-xcode ]; }; then
     echo "Mode no-xcode: rebuilding the sysroot (from a connected iPhone, or Apple's public iOS update download)"
     exec "$REPO_DIR/sdk-free/setup.sh"
@@ -499,7 +500,6 @@ if [ "${1:-}" = "--repair" ]; then
   install_darwin_tools
   install_oam
   survive_status "$cached"
-  venv_ensure # a toolchain move can strand the venv; rebuild it in place
   exit 0
 fi
 

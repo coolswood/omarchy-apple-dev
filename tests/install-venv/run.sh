@@ -72,7 +72,7 @@ EOF
   chmod +x "$1/python3"
 }
 
-home= fpath= venv_dir=
+home= fpath= venv_dir= rmode= rmodefile= swiftdir=
 new_world() { # fake toolchain: latest -> py3.14, re-pointable to py3.15
   home=$(tmpworld)
   fake_python "$home/tools/py3.14/bin" 3.14.0
@@ -81,10 +81,41 @@ new_world() { # fake toolchain: latest -> py3.14, re-pointable to py3.15
   ln -s "$home/tools/py3.14/bin/python3" "$home/tools/latest/bin/python3"
   fpath="$home/tools/latest/bin"
   venv_dir="$home/pymobile3-venv"
+  swiftdir=
   : >"$home/creates.log"
 }
 repin() { # the toolchain update: latest now points at the new minor
   ln -sfn "$home/tools/py3.15/bin/python3" "$home/tools/latest/bin/python3"
+}
+make_venv() { # VERSION HEALTHY: stub venv built directly, not by the code under test
+  FAKE_LOG=/dev/null "$home/tools/py$1/bin/python3" -m venv "$venv_dir"
+  if [ "${2:-}" = healthy ]; then
+    "$venv_dir/bin/pip" install >/dev/null 2>&1
+  fi
+}
+run_repair() { # BLOCK HELPERS: runs the extracted --repair block; one shared order log
+  local block=$1 helpers=$2 p="$fpath:$PATH"
+  mkdir -p "$home/repodir/sdk-free"
+  printf '#!/usr/bin/env bash\necho setup >>"$SETUP_LOG"\n' >"$home/repodir/sdk-free/setup.sh"
+  chmod +x "$home/repodir/sdk-free/setup.sh"
+  if [ -n "$swiftdir" ]; then p="$swiftdir:$p"; fi
+  if [ -n "$rmodefile" ]; then
+    mkdir -p "$home/.config/omarchy-apple-dev"
+    printf '%s\n' "$rmodefile" >"$home/.config/omarchy-apple-dev/mode"
+  fi
+  env HOME="$home" PATH="$p" FAKE_LOG="$home/order.log" SETUP_LOG="$home/order.log" \
+    MODE="$rmode" MODE_FILE="$home/.config/omarchy-apple-dev/mode" VENV="$venv_dir" \
+    REPO_DIR="$home/repodir" SDK_CACHE="$home/sdkcache" \
+    bash -c '
+      set -uo pipefail
+      sdk_install_from() { :; }
+      install_darwin_tools() { :; }
+      install_oam() { :; }
+      survive_status() { :; }
+      toolchain_first_on_path() { :; }
+      source "$2"
+      source "$0"
+    ' "$block" --repair "$helpers" 2>&1
 }
 run_helpers() { # BLOCK SNIPPET WORKDIR VENV: source the helpers, run a snippet
   env HOME="$home" PATH="$fpath:$PATH" FAKE_LOG="$home/creates.log" bash -c '
@@ -234,7 +265,132 @@ row_fails() { # FN BLOCK: true when the row fails; row temp dirs stay cleanable
   [ $? -ne 0 ]
 }
 
-check_mutations() { # the suite must catch the bugs it exists for
+order_str() { # one-line view of the order log for failure messages
+  tr '\n' '|' <"$home/order.log"
+}
+
+check_repair_no_xcode_explicit() { # MODE=no-xcode: venv rebuilt before setup exec
+  local block=$1 out rc
+  new_world
+  make_venv 3.14
+  repin
+  : >"$home/order.log"
+  rmode=no-xcode
+  rmodefile=
+  out=$(run_repair "$block" "$helpers_block")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then bad "repair-explicit" "rc $rc: $out"; return 1; fi
+  if [ "$(wc -l <"$home/order.log")" != 2 ]; then
+    bad "repair-explicit" "want rebuild then setup, got: $(order_str)"
+    return 1
+  fi
+  if ! grep -qF "$home/tools/py3.15/bin/python3" <<<"$(sed -n '1p' "$home/order.log")"; then
+    bad "repair-explicit" "venv not rebuilt before setup: $(order_str)"
+    return 1
+  fi
+  if [ "$(sed -n '2p' "$home/order.log")" != "setup" ]; then
+    bad "repair-explicit" "setup did not run after the rebuild: $(order_str)"
+    return 1
+  fi
+  if ! grep -qF "home = $home/tools/py3.15/bin" "$venv_dir/pyvenv.cfg"; then
+    bad "repair-explicit" "venv still stale: $(cat "$venv_dir/pyvenv.cfg" 2>/dev/null)"
+    return 1
+  fi
+  if [ ! -f "$venv_dir/.imports_ok" ]; then
+    bad "repair-explicit" "pymobiledevice3 not reinstalled"
+    return 1
+  fi
+  ok "repair-explicit: no-xcode repair rebuilds the venv before setup runs"
+}
+
+check_repair_no_xcode_saved() { # mode saved in the mode file: same order
+  local block=$1 out rc
+  new_world
+  make_venv 3.14
+  repin
+  : >"$home/order.log"
+  rmode=
+  rmodefile=no-xcode
+  out=$(run_repair "$block" "$helpers_block")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then bad "repair-saved" "rc $rc: $out"; return 1; fi
+  if [ "$(wc -l <"$home/order.log")" != 2 ]; then
+    bad "repair-saved" "want rebuild then setup, got: $(order_str)"
+    return 1
+  fi
+  if ! grep -qF "$home/tools/py3.15/bin/python3" <<<"$(sed -n '1p' "$home/order.log")"; then
+    bad "repair-saved" "venv not rebuilt before setup: $(order_str)"
+    return 1
+  fi
+  if [ "$(sed -n '2p' "$home/order.log")" != "setup" ]; then
+    bad "repair-saved" "setup did not run after the rebuild: $(order_str)"
+    return 1
+  fi
+  if ! grep -qF "home = $home/tools/py3.15/bin" "$venv_dir/pyvenv.cfg"; then
+    bad "repair-saved" "venv still stale: $(cat "$venv_dir/pyvenv.cfg" 2>/dev/null)"
+    return 1
+  fi
+  ok "repair-saved: saved no-xcode mode rebuilds the venv before setup runs"
+}
+
+check_repair_no_xcode_healthy() { # healthy venv: untouched, setup still runs
+  local block=$1 out rc
+  new_world
+  make_venv 3.14 healthy
+  repin
+  : >"$home/order.log"
+  rmode=no-xcode
+  rmodefile=
+  out=$(run_repair "$block" "$helpers_block")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then bad "repair-healthy" "rc $rc: $out"; return 1; fi
+  if [ "$(wc -l <"$home/order.log")" != 1 ] || [ "$(cat "$home/order.log")" != "setup" ]; then
+    bad "repair-healthy" "want setup only, got: $(order_str)"
+    return 1
+  fi
+  if ! grep -qF "home = $home/tools/py3.14/bin" "$venv_dir/pyvenv.cfg"; then
+    bad "repair-healthy" "healthy venv was changed"
+    return 1
+  fi
+  if [ "$(cat "$venv_dir/.pip_runs")" != 1 ]; then
+    bad "repair-healthy" "pip re-ran although healthy"
+    return 1
+  fi
+  ok "repair-healthy: healthy venv untouched, setup still runs"
+}
+
+check_repair_full_rebuilds() { # full mode: repair still rebuilds a broken venv
+  local block=$1 out rc
+  new_world
+  make_venv 3.14
+  repin
+  swiftdir="$home/swiftbin"
+  mkdir -p "$swiftdir"
+  printf '#!/usr/bin/env bash\necho "Swift version 6.4.0"\n' >"$swiftdir/swift"
+  chmod +x "$swiftdir/swift"
+  mkdir -p "$home/sdkcache/darwin-iPhoneOS27.0.xtoolsdk"
+  : >"$home/order.log"
+  rmode=full
+  rmodefile=
+  out=$(run_repair "$block" "$helpers_block")
+  rc=$?
+  if [ "$rc" -ne 0 ]; then bad "repair-full" "rc $rc: $out"; return 1; fi
+  if ! grep -qF "home = $home/tools/py3.15/bin" "$venv_dir/pyvenv.cfg"; then
+    bad "repair-full" "venv not rebuilt: $(cat "$venv_dir/pyvenv.cfg" 2>/dev/null)"
+    return 1
+  fi
+  if [ ! -f "$venv_dir/.imports_ok" ]; then
+    bad "repair-full" "pymobiledevice3 not reinstalled"
+    return 1
+  fi
+  if [ "$(wc -l <"$home/order.log")" != 1 ]; then
+    bad "repair-full" "unexpected order log: $(order_str)"
+    return 1
+  fi
+  ok "repair-full: full-mode repair rebuilds the broken venv"
+}
+
+check_mutations() { # HELPER-BLOCK REPAIR-BLOCK: the suite must catch the bugs it exists for
   local mblock
   mblock=$(tmpworld)/mutated.sh
   # Creation without readlink -f bakes in the symlink (the reported bug).
@@ -258,17 +414,34 @@ check_mutations() { # the suite must catch the bugs it exists for
   else
     bad "mutation-guard" "suite did not catch an opened rm guard"
   fi
+  # The venv check must run before the no-xcode exec, not after the SDK work.
+  sed '/^  venv_ensure /d' "$2" >"$mblock"
+  if row_fails check_repair_no_xcode_explicit "$mblock"; then
+    ok "mutation-repair-order: caught"
+  else
+    bad "mutation-repair-order" "suite did not catch a late venv check in --repair"
+  fi
 }
 
 block=$(tmpworld)/block.sh
 sed -n '/^venv_healthy()/,/^# Register the SDK bundle/p' "$script" | sed '$d' >"$block"
+helpers_block=$block
+rblock=$(tmpworld)/repair-block.sh
+sed -n '/^if \[ "\${1:-}" = "--repair" \]; then$/,/^resolve_mode$/p' "$script" | sed '$d' >"$rblock"
 echo "== install-venv: installer=$script"
 if [ ! -s "$block" ]; then
   echo "note: no venv helpers found; rows will fail (fix not applied?)"
+fi
+if [ ! -s "$rblock" ]; then
+  echo "note: no --repair block found; repair rows will fail"
 fi
 check_resolved "$block"
 check_healthy_kept "$block"
 check_unhealthy_rebuilt "$block"
 check_guard "$block"
-check_mutations "$block"
+check_repair_no_xcode_explicit "$rblock"
+check_repair_no_xcode_saved "$rblock"
+check_repair_no_xcode_healthy "$rblock"
+check_repair_full_rebuilds "$rblock"
+check_mutations "$block" "$rblock"
 exit "$fail"

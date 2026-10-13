@@ -58,3 +58,13 @@ rc=0
 
 Not checked here: a real `mise`/`asdf` toolchain swap on a phone-capable host. Also not checked: a real
 venv build, and `--repair` on real hardware. The suite proves the logic against stubs only.
+
+Follow-up (same day, review comment on PR #56): `--repair` ran the venv check only in the full-mode path,
+after the SDK work. The no-xcode path execs `sdk-free/setup.sh` and never reached it. The check now runs
+at the top of the `--repair` block, before the mode split, so both modes rebuild a broken venv first. New
+rows run the extracted `--repair` block against stubs with one order log. An explicit no-xcode mode and a
+saved no-xcode mode each record the rebuild line before the `setup` line. A healthy venv stays untouched
+while setup still runs. A full-mode repair still rebuilds. On commit 16109fb5 the rows `repair-explicit`
+and `repair-saved` fail: the order log holds `setup` alone, so the rebuild never ran. A fourth in-suite
+mutation deletes the early call, and `repair-explicit` catches it. `bash tests/run.sh` ends `all checks
+passed` on the Linux host.
