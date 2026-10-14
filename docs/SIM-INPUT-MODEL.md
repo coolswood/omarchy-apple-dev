@@ -1,12 +1,14 @@
-# M3 and M5 input rules
+# M3, M5 and M6 input rules
 
-Date: 2026-10-11. M3 defines the frame loader and touch rules. M5 adds the
-vertical scroll model. Both are implemented in `simview/Sources/SwiftUI/`.
-Related files: `../receipts/2026-10-11-simview-m3.md` and
-`../receipts/2026-10-11-simview-m5.md`.
+Date: 2026-10-14. M3 defines the frame loader and touch rules. M5 adds the
+vertical scroll model. M6 adds key records, text records, and text field
+focus. All are implemented in `simview/Sources/SwiftUI/`.
+Related files: `../receipts/2026-10-11-simview-m3.md`,
+`../receipts/2026-10-11-simview-m5.md`, and
+`../receipts/2026-10-14-simview-m6.md`.
 
 This page fixes what a touch or key event is in our Linux simulation, and which rules the M3 tests check.
-It belongs to [IOS-SIMULATION-LINUX.md](IOS-SIMULATION-LINUX.md), rungs M3 and M5.
+It belongs to [IOS-SIMULATION-LINUX.md](IOS-SIMULATION-LINUX.md), rungs M3, M5 and M6.
 
 The rules describe our simulation. They do not claim to match Apple's input behavior.
 
@@ -74,8 +76,39 @@ Keys come in two forms.
 - **Text outside ASCII** goes in through a text insertion call, not through key events. The app then sees an edit but
   no per-key callback.
 
-Keys need more than input. The app must also know which text field has focus. M3 does not build keys. A rung after M3
-builds them, and it is not planned yet.
+Keys need more than input. The app must also know which text field has focus.
+
+## M6 keys and focus
+
+M6 implements a minimal slice of the rules above, in the scripted frame file.
+
+A frame holds at most one of `fingers`, `key`, and `text`.
+
+- `{"key": n}` is the by-position form. `n` is the USB keyboard usage number,
+  page 7. The runner maps two usages: 40 is Return and 42 is Backspace.
+  Another number is dropped with a warning line. Shift, control, option and
+  command are not implemented, so no modifier state exists.
+- `{"text": "c"}` is the text insertion form. It inserts one character. The
+  5 x 7 font draws ASCII only; an unknown character advances one cell and
+  draws nothing.
+
+Focus rules:
+
+- A completed tap focuses the text field under it. The tap rules are the M3
+  rules: the target is fixed at `began`, and the focus change applies when
+  the last finger ends inside the target.
+- A tap anywhere else blurs. A `cancelled` tap changes nothing.
+- The runner routes every `key` and `text` record to the focused field only.
+  A record with no focus is dropped, and the runner prints one warning line
+  per dropped record.
+- Inside a focused field, a character appends at the caret. The caret sits
+  at the end and cannot be placed by tap. Backspace removes one character
+  and never goes below empty. Return fires the field's `onSubmit` closure
+  when present and always blurs.
+
+M6 stays out: shift and caps lock, IME and dictation, autocorrect, caret
+placement, text selection, and scrolling inside a field whose text is wider
+than the box.
 
 ## The scripted frame file for M3
 
@@ -129,6 +162,8 @@ place of a line number.
 - iOS gesture recognizers. We write our own hit testing, so passing proves our model, not Apple's.
 - Edge rules of the real system, such as the edge swipe that goes back, or touches that start in a safe area.
 - M5 scroll offset is our model. We have not measured it against Apple's behavior.
-- Keyboard focus, dictation, and the pause some apps show the first time a text field gets focus.
+- M6 focus and key routing are our model. We cannot prove anything about
+  Apple's keyboard, IME, dictation, autocorrect, focus ring, or caret
+  drawing, and M6 runs no modifier state.
 
 The phone path in [OVER-TAILNET.md](OVER-TAILNET.md) can later give a real device to compare against.

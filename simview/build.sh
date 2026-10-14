@@ -42,4 +42,7 @@ run swiftc -swift-version 5 -parse-as-library -I "$b" \
 run swiftc -swift-version 5 -parse-as-library -I "$b" \
   -o "$P/scrolldemo" \
   "$b/SwiftUI.o" "$P/simview/Sources/ScrollDemo/ScrollDemo.swift"
-echo "built $P/simview-demo, $P/m3app, $P/nestedapp, $P/overlapapp, $P/navdemo and $P/scrolldemo"
+run swiftc -swift-version 5 -parse-as-library -I "$b" \
+  -o "$P/keysdemo" \
+  "$b/SwiftUI.o" "$P/simview/Sources/KeysDemo/KeysDemo.swift"
+echo "built $P/simview-demo, $P/m3app, $P/nestedapp, $P/overlapapp, $P/navdemo, $P/scrolldemo and $P/keysdemo"

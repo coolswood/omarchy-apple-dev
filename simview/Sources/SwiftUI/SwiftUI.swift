@@ -6,7 +6,8 @@
 // and raster pass, and the PNG encoder. No Apple source, no third-party code.
 //
 // Not in this module: real SwiftUI layout, font shaping, animation, Metal.
-// M3 adds scripted touch frames. M5 adds vertical scrolling.
+// M3 adds scripted touch frames. M5 adds vertical scrolling. M6 adds key
+// records, text insertion, and text field focus.
 
 import Foundation
 
@@ -143,6 +144,9 @@ public enum Spec {
   case hairline
   indirect case navstack(String?, (() -> Void)?, Spec)
   indirect case scrollview(Binding<Int>, Spec)
+  // M6: a text field. The binding carries the text, the string is the
+  // placeholder, the closure fires on Return.
+  indirect case textfield(Binding<String>, String, (() -> Void)?)
 }
 
 public struct TupleView<T>: View {
@@ -271,6 +275,30 @@ public struct ScrollView<Content: View>: View {
   public func _simSpec() -> Spec { .scrollview($offset, content._simSpec()) }
 }
 
+// MARK: - Text input (M6)
+
+// A text field. The text lives in a binding the caller owns. A completed
+// tap focuses the field; a tap anywhere else blurs it. Typed characters
+// append at the caret, which always sits at the end. Backspace removes one
+// character and stops at empty. Return fires `onSubmit` when present and
+// always blurs. Shift and caps lock are not implemented.
+public struct TextField: View {
+  let placeholder: String
+  let text: Binding<String>
+  let onSubmit: (() -> Void)?
+
+  public init(_ placeholder: String, text: Binding<String>,
+              onSubmit: (() -> Void)? = nil) {
+    self.placeholder = placeholder
+    self.text = text
+    self.onSubmit = onSubmit
+  }
+
+  public typealias Body = EmptyView
+  public var body: EmptyView { EmptyView() }
+  public func _simSpec() -> Spec { .textfield(text, placeholder, onSubmit) }
+}
+
 public struct Titled<Content: View>: View {
   let title: String
   let content: Content
@@ -378,6 +406,15 @@ enum Sim {
   static let screenHeight = 844
   static let black = Pixel(r: 0, g: 0, b: 0)
   static let blue = Pixel(r: 0x00, g: 0x7A, b: 0xFF)  // #007AFF
+  // Text field box, fixed size. Text wider than the box overflows; the
+  // field does not scroll.
+  static let fieldWidth = 60
+  static let fieldHeight = 9
+  // Focus owner: the id of the focused text field, or nil. Set by the
+  // touch loop on a completed tap and cleared by blur.
+  static var focusField: Int?
+  // Field ids, assigned in layout order like button ids.
+  static var nextFieldId = 1
 
   // @State slot pool, see State. beginStatePass() goes with the start of
   // one tree build; wrappers then claim indexes in creation order.
@@ -416,6 +453,8 @@ enum Sim {
       preconditionFailure("simview: NavigationLink outside a NavigationStack")
     case .scrollview:
       return Size(w: screenWidth, h: screenHeight)
+    case .textfield:
+      return Size(w: fieldWidth, h: fieldHeight)
     case .navstack:
       return Size(w: screenWidth, h: screenHeight)
     }
@@ -444,6 +483,7 @@ enum Sim {
     let color: Pixel
     let buttonId: Int?
     let action: (() -> Void)?
+    var fieldId: Int? = nil
   }
 
   static func layout(_ s: Spec, at x: Int, y: Int, width: Int, color: Pixel,
@@ -483,6 +523,11 @@ enum Sim {
                             color: color, buttonId: nil, action: nil))
       layout(content, at: 0, y: -offset.get(), width: screenWidth, color: color,
              nextButton: &nextButton, into: &out)
+    case .textfield:
+      let id = nextFieldId
+      nextFieldId += 1
+      out.append(PlacedNode(spec: s, x: x, y: y, w: fieldWidth, h: fieldHeight,
+                            color: color, buttonId: nil, action: nil, fieldId: id))
     case .navstack(let title, let back, let screen):
       layoutNavStack(title, back, screen, nextButton: &nextButton, into: &out)
     }
@@ -561,6 +606,22 @@ enum Sim {
             c.set(x: x, y: y, p.color)
           }
         }
+      case .textfield(let text, let placeholder, _):
+        let value = text.get()
+        if value.isEmpty {
+          drawText(placeholder, in: &c, at: p.x, y: p.y, color: Pixel.placeholder)
+        } else {
+          drawText(value, in: &c, at: p.x, y: p.y, color: p.color)
+        }
+        for x in p.x..<p.x + p.w {
+          c.set(x: x, y: p.y + p.h - 1, Pixel.separator)
+        }
+        if focusField == p.fieldId {
+          let caretX = p.x + (value.isEmpty ? 0 : textSize(value).w + 1)
+          for row in 0..<Font.glyphHeight {
+            c.set(x: caretX, y: p.y + row, p.color)
+          }
+        }
       default:
         break
       }
@@ -571,6 +632,7 @@ enum Sim {
     var c = Canvas(width: screenWidth, height: screenHeight, fill: Pixel.white)
     var placed: [PlacedNode] = []
     var nextButton = 1
+    nextFieldId = 1
     let s = measure(spec)
     layout(spec, at: (screenWidth - s.w) / 2, y: (screenHeight - s.h) / 2,
            width: s.w, color: black, nextButton: &nextButton, into: &placed)
@@ -610,6 +672,8 @@ enum Sim {
   struct Frame {
     let tMs: Int
     let fingers: [FingerRec]
+    let key: Int?          // USB keyboard usage, page 7
+    let insert: Character? // by-character text insertion
   }
 
   static func framesFail(_ msg: String) -> Never {
@@ -633,8 +697,11 @@ enum Sim {
   }
 
   // Loads and validates a frames file. A {"tap": [x, y]} entry expands to a
-  // began frame and an ended frame 80 ms apart. Refuses out-of-order t_ms,
-  // naming the frame index.
+  // began frame and an ended frame 80 ms apart. M6 adds two record kinds: a
+  // {"key": n} frame presses the USB keyboard usage n (page 7), and a
+  // {"text": "c"} frame inserts one character. A frame holds at most one of
+  // fingers, key, and text. Refuses out-of-order t_ms, naming the frame
+  // index.
   static func loadFrames(_ path: String) -> [Frame] {
     guard let data = FileManager.default.contents(atPath: path) else {
       framesFail("cannot read \(path)")
@@ -655,14 +722,39 @@ enum Sim {
         }
         let t = (short["t_ms"] as? Int) ?? (prevT ?? 0)
         if let prev = prevT, t < prev { framesFail("frame \(i): t_ms \(t) goes backward (previous \(prev))") }
-        out.append(Frame(tMs: t, fingers: [FingerRec(finger: 0, phase: .began, x: x, y: y)]))
-        out.append(Frame(tMs: t + 80, fingers: [FingerRec(finger: 0, phase: .ended, x: x, y: y)]))
+        out.append(Frame(tMs: t, fingers: [FingerRec(finger: 0, phase: .began, x: x, y: y)],
+                         key: nil, insert: nil))
+        out.append(Frame(tMs: t + 80, fingers: [FingerRec(finger: 0, phase: .ended, x: x, y: y)],
+                         key: nil, insert: nil))
         prevT = t + 80
         continue
       }
       guard let dict = item as? [String: Any] else { framesFail("frame \(i): not an object") }
       guard let t = dict["t_ms"] as? Int else { framesFail("frame \(i): missing t_ms") }
       if let prev = prevT, t < prev { framesFail("frame \(i): t_ms \(t) goes backward (previous \(prev))") }
+      if let usage = dict["key"] as? Int {
+        guard dict["fingers"] == nil, dict["text"] == nil else {
+          framesFail("frame \(i): hold at most one of fingers, key, text")
+        }
+        guard (0...255).contains(usage) else {
+          framesFail("frame \(i): key \(usage) is out of range 0 to 255")
+        }
+        out.append(Frame(tMs: t, fingers: [], key: usage, insert: nil))
+        prevT = t
+        continue
+      }
+      if let s = dict["text"] as? String {
+        guard dict["fingers"] == nil else {
+          framesFail("frame \(i): hold at most one of fingers, key, text")
+        }
+        let chars = Array(s)
+        guard chars.count == 1 else {
+          framesFail("frame \(i): text must hold exactly one character")
+        }
+        out.append(Frame(tMs: t, fingers: [], key: nil, insert: chars[0]))
+        prevT = t
+        continue
+      }
       guard let list = dict["fingers"] as? [Any], !list.isEmpty else {
         framesFail("frame \(i): fingers must be a non-empty list")
       }
@@ -671,7 +763,7 @@ enum Sim {
           framesFail("frame \(i) finger \(j): not an object")
         }
         return fingerRec(fd, frame: i, record: j)
-      }))
+      }, key: nil, insert: nil))
       prevT = t
     }
     return out
@@ -683,6 +775,7 @@ enum Sim {
   struct Gesture {
     var active = false
     var target: Int?
+    var targetField: Int?
     var cancelled = false
     var down: Set<Int> = []
     var startX = 0
@@ -695,7 +788,13 @@ enum Sim {
       case .began:
         if !active {
           active = true
-          target = hitTest(x: rec.x, y: rec.y, buttons: buttons)
+          if let node = hitTest(x: rec.x, y: rec.y, placed: buttons) {
+            target = node.buttonId
+            targetField = node.fieldId
+          } else {
+            target = nil
+            targetField = nil
+          }
           cancelled = false
           startX = rec.x
           startY = rec.y
@@ -722,7 +821,15 @@ enum Sim {
         return nil
       case .ended:
         down.remove(rec.finger)
-        guard active, !cancelled, down.isEmpty, let id = target,
+        guard active, !cancelled, down.isEmpty else { return nil }
+        // A completed tap focuses a tapped field, or blurs. A cancelled
+        // gesture never reaches this point.
+        if let f = targetField {
+          focusField = f
+        } else {
+          focusField = nil
+        }
+        guard let id = target,
               let node = buttons.last(where: { $0.buttonId == id }),
               rec.x >= node.x, rec.x < node.x + node.w,
               rec.y >= node.y, rec.y < node.y + node.h else { return nil }
@@ -741,6 +848,7 @@ enum Sim {
       if down.isEmpty {
         active = false
         target = nil
+        targetField = nil
         cancelled = false
         scroll = nil
       }
@@ -791,38 +899,108 @@ enum Sim {
     }
   }
 
-  // Topmost visible element under the point. Later nodes draw on top, so the
-  // walk goes in reverse draw order.
-  static func hitTest(x: Int, y: Int, buttons: [PlacedNode]) -> Int? {
-    for node in buttons.reversed() where node.buttonId != nil {
+  // Topmost visible element under the point: a button or a text field.
+  // Later nodes draw on top, so the walk goes in reverse draw order.
+  static func hitTest(x: Int, y: Int, placed: [PlacedNode]) -> PlacedNode? {
+    for node in placed.reversed() where node.buttonId != nil || node.fieldId != nil {
       if x >= node.x, x < node.x + node.w, y >= node.y, y < node.y + node.h {
-        return node.buttonId
+        return node
       }
     }
     return nil
   }
 
+  // One warning line per dropped key or text record.
+  static func warn(_ msg: String) {
+    print("warning: \(msg)")
+  }
+
+  // The live text field targets, keyed by field id, from the last layout.
+  struct FieldTarget {
+    let text: Binding<String>
+    let onSubmit: (() -> Void)?
+  }
+
+  static func fieldMap(_ placed: [PlacedNode]) -> [Int: FieldTarget] {
+    var out: [Int: FieldTarget] = [:]
+    for node in placed {
+      guard let id = node.fieldId,
+            case .textfield(let text, _, let onSubmit) = node.spec else { continue }
+      out[id] = FieldTarget(text: text, onSubmit: onSubmit)
+    }
+    return out
+  }
+
+  // Routes one key record to the focused field only. Usage numbers are USB
+  // keyboard (page 7): 40 is Return, 42 is Backspace. Return fires onSubmit
+  // when present and always blurs. A key with no focus, or a usage the field
+  // does not map, is dropped with a warning line.
+  static func routeKey(_ usage: Int, fields: [Int: FieldTarget], tMs: Int) -> String {
+    guard let id = focusField, let field = fields[id] else {
+      warn("key \(usage) dropped (no focus)")
+      return "t=\(tMs) key=\(usage) field=none"
+    }
+    switch usage {
+    case 42:
+      field.text.set(String(field.text.get().dropLast()))
+    case 40:
+      field.onSubmit?()
+      focusField = nil
+    default:
+      warn("key \(usage) dropped (no mapping)")
+    }
+    let label = focusField.map { "Field#\($0)" } ?? "none"
+    return "t=\(tMs) key=\(usage) field=\(label)"
+  }
+
+  // Routes one text insertion to the focused field only. The caret sits at
+  // the end, so the character appends.
+  static func routeText(_ ch: Character, fields: [Int: FieldTarget], tMs: Int) -> String {
+    guard let id = focusField, let field = fields[id] else {
+      warn("text \(ch) dropped (no focus)")
+      return "t=\(tMs) text=\(ch) field=none"
+    }
+    field.text.set(field.text.get() + String(ch))
+    return "t=\(tMs) text=\(ch) field=Field#\(id)"
+  }
+
   // The M3 loop: validate first, then walk the frames. Each frame fires the
-  // actions the touch rules allow, rebuilds and re-renders the tree, and
-  // logs one line per finger record after that render succeeds.
+  // actions the touch rules allow, routes key and text records to the
+  // focused field, rebuilds and re-renders the tree, and logs one line per
+  // record after that render succeeds.
   static func run(frames: [Frame], build: () -> (Canvas, [PlacedNode], [Any])) -> Canvas {
+    focusField = nil
     var (canvas, placed, roots) = build()
     for node in placed where node.buttonId != nil {
       print("button id=\(node.buttonId!) rect=\(node.x),\(node.y),\(node.w),\(node.h)")
     }
+    for node in placed where node.fieldId != nil {
+      print("field id=\(node.fieldId!) rect=\(node.x),\(node.y),\(node.w),\(node.h)")
+    }
     var gesture = Gesture()
+    var fields = fieldMap(placed)
     for frame in frames {
       var lines: [String] = []
-      for rec in frame.fingers {
-        if let action = gesture.process(rec, buttons: placed) {
-          action()
+      if let usage = frame.key {
+        lines.append(routeKey(usage, fields: fields, tMs: frame.tMs)
+          + " state=\(stateDescription(roots))")
+      } else if let ch = frame.insert {
+        lines.append(routeText(ch, fields: fields, tMs: frame.tMs)
+          + " state=\(stateDescription(roots))")
+      } else {
+        for rec in frame.fingers {
+          if let action = gesture.process(rec, buttons: placed) {
+            action()
+          }
+          let label = gesture.targetField.map { "Field#\($0)" } ?? targetName(gesture.target)
+          lines.append("t=\(frame.tMs) finger=\(rec.finger) \(rec.phase.rawValue) "
+            + "(\(rec.x),\(rec.y)) target=\(label) "
+            + "state=\(stateDescription(roots))")
         }
-        lines.append("t=\(frame.tMs) finger=\(rec.finger) \(rec.phase.rawValue) "
-          + "(\(rec.x),\(rec.y)) target=\(targetName(gesture.target)) "
-          + "state=\(stateDescription(roots))")
       }
       gesture.endIfDone()
       (canvas, placed, roots) = build()
+      fields = fieldMap(placed)
       for line in lines {
         print(line + " render=ok")
       }
@@ -1024,6 +1202,7 @@ struct Pixel {
   let b: UInt8
   static let white = Pixel(r: 255, g: 255, b: 255)
   static let separator = Pixel(r: 0xE5, g: 0xE5, b: 0xE5)  // #E5E5EA-ish
+  static let placeholder = Pixel(r: 0x8A, g: 0x8A, b: 0x8A)
 }
 
 struct Canvas {

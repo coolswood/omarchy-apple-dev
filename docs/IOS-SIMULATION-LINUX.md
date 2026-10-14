@@ -117,7 +117,7 @@ rung lands a receipt.
 | Collect drawn layers and show them | Layers go to a render service. It draws them into shared buffers. | Our draw path. It fills an RGBA buffer on the CPU, then writes a PNG. | M2 |
 | Use the GPU | Drawing and shader builds call a GPU service. | None. Route B has no GPU. Route A leaves it to the user's machine. | out of scope |
 | Deliver touches | Frames of finger records: a finger, a phase, a position, and a time. One element is the target. | Our frame format and hit testing. See [SIM-INPUT-MODEL.md](SIM-INPUT-MODEL.md). | M3 |
-| Deliver keys and text focus | A focus owner. Without one, the app drops keys silently. | Not planned yet. | later |
+| Deliver keys and text focus | A focus owner. Without one, the app drops keys silently. | Key records, text records, and a focus owner in the runner. See [SIM-INPUT-MODEL.md](SIM-INPUT-MODEL.md). | M6 |
 | Copy and paste | A pasteboard service shared by apps. | An in-memory store for one run. | M4 or later |
 | Keep app data | A private folder for documents, caches and preferences. | One folder per bundle id under a run directory. | M4 |
 | Keep secrets | A keychain service. | A plain file, marked as not secure. | M4 or later |
@@ -264,6 +264,29 @@ proven in-suite against a changed build. The M2, M3, and M4 suites still pass.
 
 - Cannot prove: iOS scroll behavior. Momentum, fling, and deceleration after
   the lift are not implemented. Neither are pinch, rotate, or keys.
+
+### M6: keyboard input and text field focus
+
+The key and text record rules are in [SIM-INPUT-MODEL.md](SIM-INPUT-MODEL.md).
+
+Landed on branch `simview-m6` ([receipt](../receipts/2026-10-14-simview-m6.md)).
+A frame file gains two record kinds next to the finger records: a `key` record
+with a USB keyboard usage number (page 7), and a `text` record with one
+character. The runner routes both to the focused text field only. A completed
+tap focuses the field under it; a tap anywhere else blurs it; a cancelled tap
+changes nothing. A key with no focus is dropped, and the runner prints one
+warning line. The module gained `TextField`, which renders its text or
+placeholder, an underline, and a caret. Typed characters append at the caret,
+which sits at the end. Backspace removes one character and stops at empty.
+Return fires `onSubmit` when present and always blurs. The `KeysDemo` app has
+two fields and an echo label. `simview/test-m6.sh` runs eleven rows plus six
+mutation checks, each proven in-suite against a changed build. The M2, M3,
+M4, and M5 suites still pass.
+
+- Cannot prove: our own input model, not Apple's keyboard. No IME, dictation,
+  autocorrect, or multitap. Shift and caps lock are not implemented, so every
+  typed character is its literal self. No claim about Apple's focus ring or
+  caret drawing.
 
 ## Standing rules
 

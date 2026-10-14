@@ -98,9 +98,31 @@ goldens. See `simview/TESTS-M5.md` for expected outcomes.
 
 Scroll here is our own model. It is not Apple's scroll implementation.
 
+## Milestone M6: keys and text field focus
+
+M6 adds keyboard input to the frame file. A frame holds finger records as
+before, or one `{"key": n}` record, or one `{"text": "c"}` record. `key`
+presses a USB keyboard usage number, page 7; usage 40 is Return and usage 42
+is Backspace. `text` inserts one character. The module gained `TextField`,
+which takes a binding and an optional `onSubmit` closure. It renders its text
+or placeholder, an underline, and a caret when focused.
+
+A completed tap focuses the field under it. A tap anywhere else blurs it. A
+cancelled tap changes nothing. Keys and text go to the focused field only. A
+record with no focus is dropped with one warning line. Characters append at
+the caret, which sits at the end. Backspace stops at empty. Return fires
+`onSubmit` when present and always blurs.
+
+The `keysdemo` app has two fields and an echo label. Field one echoes its
+text on submit. `simview/test-m6.sh` checks focus, typing, backspace, blur,
+separate field state, return, drop warnings, a cancelled tap, the demo flow,
+byte determinism, and six mutations. See `simview/TESTS-M6.md`.
+
 ## Limits
 
 This is not real SwiftUI layout, fonts, animation, or Metal. It proves nothing
 about Apple's renderer or gesture recognizers. Scrolling has no fling or
-momentum. Pinch, rotate, and keyboard input are not implemented. The runner
-takes times from the file, not from a clock.
+momentum. Pinch and rotate are not implemented. Keys and focus are our own
+model: no shift or caps lock, no IME, dictation, or autocorrect, no caret
+placement by tap, and no text selection. The runner takes times from the
+file, not from a clock.
