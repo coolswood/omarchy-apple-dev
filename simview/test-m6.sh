@@ -113,6 +113,22 @@ cat > "$bh/demo6.json" <<EOF
  {"t_ms":640,"key":40}]
 EOF
 run_frames "$b/demo6.json" "$b/demo6.png" >"$bh/demo6.log" 2>&1
+cat > "$bh/slideoff6.json" <<EOF
+[{"tap":[$fx1,$fy1]},
+ {"t_ms":200,"text":"A"},
+ {"t_ms":300,"fingers":[{"finger":0,"phase":"began","x":$fx2,"y":$fy2}]},
+ {"t_ms":350,"fingers":[{"finger":0,"phase":"moved","x":300,"y":700}]},
+ {"t_ms":400,"fingers":[{"finger":0,"phase":"ended","x":300,"y":700}]},
+ {"t_ms":500,"text":"B"}]
+EOF
+run_frames "$b/slideoff6.json" "$b/slideoff6.png" >"$bh/slideoff6.log" 2>&1
+cat > "$bh/inside6.json" <<EOF
+[{"t_ms":0,"fingers":[{"finger":0,"phase":"began","x":$fx2,"y":$fy2}]},
+ {"t_ms":50,"fingers":[{"finger":0,"phase":"moved","x":$((fx2 + 2)),"y":$((fy2 + 1))}]},
+ {"t_ms":100,"fingers":[{"finger":0,"phase":"ended","x":$((fx2 + 2)),"y":$((fy2 + 1))}]},
+ {"t_ms":200,"text":"z"}]
+EOF
+run_frames "$b/inside6.json" "$b/inside6.png" >"$bh/inside6.log" 2>&1
 
 if gc keys-root.png "$bh/root6.png"; then ok "row 0 root render"; else bad "row 0 root render"; fi
 if grep -q 'target=Field#1' "$bh/focus6.log" && gc keys-focus1.png "$bh/focus6.png"; then
@@ -145,6 +161,11 @@ grep -v '^wrote ' "$bh/demo6.log" >"$bh/demo6.cmp"
 grep -v '^wrote ' "$bh/demo6-again.log" >"$bh/demo6-again.cmp"
 if cmp -s "$bh/demo6.cmp" "$bh/demo6-again.cmp" && cmp -s "$bh/demo6.png" "$bh/demo6-again.png"; then
   ok "row 10 deterministic log and PNG"; else bad "row 10 determinism"; fi
+if grep -q 'text=B field=Field#1 state=first:AB,second:' "$bh/slideoff6.log" \
+  && gc keys-slideoff.png "$bh/slideoff6.png"; then
+  ok "row 11 slide off a field changes nothing"; else bad "row 11 slide off a field"; fi
+if grep -q 'text=z field=Field#2 state=first:,second:z' "$bh/inside6.log"; then
+  ok "row 12 tap ending inside field two focuses it"; else bad "row 12 end inside field two"; fi
 
 mutant() {
   name=$1 old=$2 new=$3 frames=$4 check=$5
@@ -177,19 +198,24 @@ check_row6() { grep -q 'text=x field=none state=first:Hi,second:,echo:Hi' "$1"; 
 check_row7() { grep -q 'warning: key 42 dropped (no focus)' "$1" \
   && grep -q 'warning: text q dropped (no focus)' "$1"; }
 check_row8() { grep -q 'state=first:AB,second:' "$1"; }
+check_row11() { grep -q 'text=B field=Field#1 state=first:AB,second:' "$1"; }
 if ! mutant keys-last-field \
   'static func routeText(_ ch: Character, fields: [Int: FieldTarget], tMs: Int) -> String {
     guard let id = focusField, let field = fields[id] else {' \
   'static func routeText(_ ch: Character, fields: [Int: FieldTarget], tMs: Int) -> String {
     guard let id = fields.keys.max(), let field = fields[id] else {' \
   "$b/hi6.json" check_row2; then bad 'keys-last-field mutant failed to build'; fi
+if ! mutant no-end-inside \
+  'if let node = buttons.last(where: { $0.fieldId == f }), inside(node) {' \
+  'if let node = buttons.last(where: { $0.fieldId == f }) {' \
+  "$b/slideoff6.json" check_row11; then bad 'no-end-inside mutant failed to build'; fi
 if ! mutant backspace-front \
   'String(field.text.get().dropLast())' \
   'String(field.text.get().dropFirst())' \
   "$b/hey6.json" check_row3; then bad 'backspace-front mutant failed to build'; fi
 if ! mutant no-blur \
-  '} else {\n          focusField = nil\n        }' \
-  '} else {\n          _ = targetField\n        }' \
+  'let node = buttons.last(where: { $0.buttonId == id }) else {\n          focusField = nil\n          return nil\n        }' \
+  'let node = buttons.last(where: { $0.buttonId == id }) else {\n          return nil\n        }' \
   "$b/blur6.json" check_row4; then bad 'no-blur mutant failed to build'; fi
 if ! mutant cancelled-focus \
   'case .cancelled:\n        down.remove(rec.finger)\n        cancelled = true' \
@@ -205,4 +231,4 @@ if ! mutant no-drop-warning \
   "$b/nofocus6.json" check_row7; then bad 'no-drop-warning mutant failed to build'; fi
 
 if [ "$fail" -ne 0 ]; then echo "simview/test-m6.sh: FAILED"; exit 1; fi
-echo "simview/test-m6.sh: all 11 rows and 6 mutation checks passed"
+echo "simview/test-m6.sh: all 13 rows and 7 mutation checks passed"

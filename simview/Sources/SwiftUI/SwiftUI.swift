@@ -822,18 +822,29 @@ enum Sim {
       case .ended:
         down.remove(rec.finger)
         guard active, !cancelled, down.isEmpty else { return nil }
-        // A completed tap focuses a tapped field, or blurs. A cancelled
-        // gesture never reaches this point.
+        // The tap rules: the target is fixed at began, and the tap completes
+        // only when the last finger ends inside it. A completed tap focuses
+        // a tapped field or blurs. A tap that ends outside its target
+        // changes nothing. A tap that began on nothing blurs.
+        func inside(_ n: PlacedNode) -> Bool {
+          rec.x >= n.x && rec.x < n.x + n.w && rec.y >= n.y && rec.y < n.y + n.h
+        }
         if let f = targetField {
-          focusField = f
-        } else {
-          focusField = nil
+          if let node = buttons.last(where: { $0.fieldId == f }), inside(node) {
+            focusField = f
+          }
+          return nil
         }
         guard let id = target,
-              let node = buttons.last(where: { $0.buttonId == id }),
-              rec.x >= node.x, rec.x < node.x + node.w,
-              rec.y >= node.y, rec.y < node.y + node.h else { return nil }
-        return node.action
+              let node = buttons.last(where: { $0.buttonId == id }) else {
+          focusField = nil
+          return nil
+        }
+        if inside(node) {
+          focusField = nil
+          return node.action
+        }
+        return nil
       case .cancelled:
         down.remove(rec.finger)
         cancelled = true

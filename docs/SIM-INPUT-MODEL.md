@@ -94,10 +94,11 @@ A frame holds at most one of `fingers`, `key`, and `text`.
 
 Focus rules:
 
-- A completed tap focuses the text field under it. The tap rules are the M3
-  rules: the target is fixed at `began`, and the focus change applies when
-  the last finger ends inside the target.
-- A tap anywhere else blurs. A `cancelled` tap changes nothing.
+- The tap rules are the M3 rules: the target is fixed at `began`, and a tap
+  completes only when the last finger ends inside the target. A completed tap
+  focuses the text field under it. A tap that ends outside its target changes
+  nothing: no focus, no blur, no action. A tap that began on nothing blurs. A
+  `cancelled` tap changes nothing.
 - The runner routes every `key` and `text` record to the focused field only.
   A record with no focus is dropped, and the runner prints one warning line
   per dropped record.

@@ -14,13 +14,16 @@ A frame file can carry two new record kinds next to the M3 finger records:
 
 A frame holds at most one of `fingers`, `key`, and `text`.
 
-The focus rules: a completed tap focuses the field under it, or blurs when
-the tap lands anywhere else. A cancelled tap changes nothing. Keys go to the
-focused field only. A key with no focus is dropped, and the runner prints one
-warning line for it. The caret sits at the end of the text. Backspace removes
-one character and stops at empty. Return fires `onSubmit` when present and
-always blurs. The field box is 60 by 9 points. Text wider than the box
-overflows; the field does not scroll.
+The focus rules: the tap rules of M3 decide focus. The target is fixed at
+`began`, and a tap completes only when the last finger ends inside the
+target. A completed tap focuses the field under it. A tap that ends outside
+its target changes nothing: no focus, no blur, no action. A tap that began on
+nothing blurs. A cancelled tap changes nothing. Keys go to the focused field
+only. A key with no focus is dropped, and the runner prints one warning line
+for it. The caret sits at the end of the text. Backspace removes one
+character and stops at empty. Return fires `onSubmit` when present and always
+blurs. The field box is 60 by 9 points. Text wider than the box overflows;
+the field does not scroll.
 
 `simview/test-m6.sh` checks these rows. PNG tolerance is zero differing
 pixels and zero channel difference. State is read from the log lines.
@@ -38,6 +41,8 @@ pixels and zero channel difference. State is read from the log lines.
 | 8 | Type A in field one, begin a tap on field two, cancel it, type B | The cancelled tap does not focus. B goes to field one: state shows `first:AB,second:`. The PNG matches `golden/keys-cancel.png`. |
 | 9 | The demo flow: tap field one, type Hi, backspace, type ey, tap field two, type ok, press Return | State shows `first:Hey,second:ok`. The PNG matches `golden/keys-demo.png`. |
 | 10 | Run the demo flow twice | Both logs and both PNG files are byte-identical. |
+| 11 | Focus field one and type A, then begin on field two, slide off, and lift on empty space, then type B | The slide changes nothing. Field one keeps focus: state shows `first:AB,second:`. The PNG matches `golden/keys-slideoff.png`. |
+| 12 | Begin on field two, move two points inside it, lift inside it, type z | The tap completes and focuses field two: state shows `first:,second:z`. |
 
 ## Mutation checks
 
@@ -48,8 +53,19 @@ mutant that fails to compile or survives its row fails the suite.
 | Mutation | Changed behavior | Required failing check |
 |---|---|---|
 | keys-last-field | Routes text records to the highest field id instead of the focused one | Row 2 state |
+| no-end-inside | Focuses a field without the end-inside check | Row 11 state |
 | backspace-front | Backspace removes the first character instead of the last | Row 3 state |
-| no-blur | A completed tap outside a field keeps the old focus | Row 4 state |
+| no-blur | A tap that began on nothing keeps the old focus | Row 4 state |
 | cancelled-focus | A cancelled tap focuses its field | Row 8 state |
 | no-return-blur | Return fires `onSubmit` but keeps focus | Row 6 state |
 | no-drop-warning | Drops keys without printing the warning line | Row 7 warnings |
+
+## Notes
+
+- Row 4 is also the began-on-nothing blur case: the tap starts and ends on
+  empty space, and the runner must blur.
+- The button case of the same rule (a gesture that begins on a button and
+  ends outside it must not blur) shares the end-inside check with the button
+  action path, which the M3 rows cover. `keysdemo` has no button, so no row
+  here drives that path with focus set.
+

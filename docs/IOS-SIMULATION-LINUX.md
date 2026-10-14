@@ -272,16 +272,18 @@ The key and text record rules are in [SIM-INPUT-MODEL.md](SIM-INPUT-MODEL.md).
 Landed on branch `simview-m6` ([receipt](../receipts/2026-10-14-simview-m6.md)).
 A frame file gains two record kinds next to the finger records: a `key` record
 with a USB keyboard usage number (page 7), and a `text` record with one
-character. The runner routes both to the focused text field only. A completed
-tap focuses the field under it; a tap anywhere else blurs it; a cancelled tap
-changes nothing. A key with no focus is dropped, and the runner prints one
-warning line. The module gained `TextField`, which renders its text or
-placeholder, an underline, and a caret. Typed characters append at the caret,
-which sits at the end. Backspace removes one character and stops at empty.
-Return fires `onSubmit` when present and always blurs. The `KeysDemo` app has
-two fields and an echo label. `simview/test-m6.sh` runs eleven rows plus six
-mutation checks, each proven in-suite against a changed build. The M2, M3,
-M4, and M5 suites still pass.
+character. The runner routes both to the focused text field only. The M3 tap
+rules decide focus: the tap completes only when the last finger ends inside
+the target it began on, a completed tap focuses the field under it, and a tap
+that ends outside its target changes nothing. A tap that began on nothing
+blurs, and a cancelled tap changes nothing. A key with no focus is dropped,
+and the runner prints one warning line. The module gained `TextField`, which
+renders its text or placeholder, an underline, and a caret. Typed characters
+append at the caret, which sits at the end. Backspace removes one character
+and stops at empty. Return fires `onSubmit` when present and always blurs.
+The `KeysDemo` app has two fields and an echo label. `simview/test-m6.sh`
+runs thirteen rows plus seven mutation checks, each proven in-suite against a
+changed build. The M2, M3, M4, and M5 suites still pass.
 
 - Cannot prove: our own input model, not Apple's keyboard. No IME, dictation,
   autocorrect, or multitap. Shift and caps lock are not implemented, so every

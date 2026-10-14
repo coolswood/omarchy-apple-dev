@@ -107,16 +107,19 @@ is Backspace. `text` inserts one character. The module gained `TextField`,
 which takes a binding and an optional `onSubmit` closure. It renders its text
 or placeholder, an underline, and a caret when focused.
 
-A completed tap focuses the field under it. A tap anywhere else blurs it. A
-cancelled tap changes nothing. Keys and text go to the focused field only. A
-record with no focus is dropped with one warning line. Characters append at
-the caret, which sits at the end. Backspace stops at empty. Return fires
-`onSubmit` when present and always blurs.
+A tap completes only when the last finger ends inside the target it began
+on. A completed tap focuses the field under it. A tap that ends outside its
+target changes nothing. A tap that began on nothing blurs. A cancelled tap
+changes nothing. Keys and text go to the focused field only. A record with no
+focus is dropped with one warning line. Characters append at the caret, which
+sits at the end. Backspace stops at empty. Return fires `onSubmit` when
+present and always blurs.
 
 The `keysdemo` app has two fields and an echo label. Field one echoes its
 text on submit. `simview/test-m6.sh` checks focus, typing, backspace, blur,
-separate field state, return, drop warnings, a cancelled tap, the demo flow,
-byte determinism, and six mutations. See `simview/TESTS-M6.md`.
+separate field state, return, drop warnings, a cancelled tap, a slide off a
+field, the demo flow, byte determinism, and seven mutations. See
+`simview/TESTS-M6.md`.
 
 ## Limits
 
