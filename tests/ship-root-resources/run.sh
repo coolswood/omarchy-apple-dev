@@ -23,6 +23,8 @@
 #       expands against the project dir)
 #   M2  drop the -path ./PrivacyInfo.xcprivacy term -> row 1 no longer moves
 #       the manifest
+#   M3  replace ${ROOT_RESOURCES:-} with $ROOT_RESOURCES -> row 1 (variable
+#       unset) fails: ship.sh runs under set -u, so an unguarded use aborts
 # usage: run.sh [path-to-ship.sh]   default: ../../ship.sh (repo checkout)
 set -uo pipefail
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
@@ -32,9 +34,11 @@ trap 'rm -rf "$tmp"' EXIT
 fail=0
 ok() { echo "ok   $*"; }
 bad() { echo "FAIL $*"; fail=1; }
-# drive <projdir> [ROOT_RESOURCES]: runs the step-2 loop of $SHIP in projdir.
+# drive <projdir> [ROOT_RESOURCES]: runs the step-2 loop of $SHIP in projdir. Without the second
+# argument ROOT_RESOURCES is UNSET (ship.sh runs under set -u, so unset must work); an empty second
+# argument sets it to the empty string.
 drive() {
-  local proj=$1 rr=${2:-}
+  local proj=$1
   [ -d "$proj" ] || { bad "drive: no project at $proj"; return 1; }
   (
     set -euo pipefail
@@ -44,8 +48,12 @@ drive() {
     cd "$proj"
     PY=python3
     app=xtool/Demo.app
-    ROOT_RESOURCES=$rr
-    export ROOT_RESOURCES
+    if [ "$#" -ge 2 ]; then
+      ROOT_RESOURCES=$2
+      export ROOT_RESOURCES
+    else
+      unset ROOT_RESOURCES
+    fi
     source "$loop"
   )
 }
@@ -171,6 +179,22 @@ if [ "$(grep -c 'PrivacyInfo.xcprivacy' "$tmp/m2.sh")" -lt "$(grep -c 'PrivacyIn
   at "$(bnd m2p)" PrivacyInfo.xcprivacy "M2 without the term the manifest stays in the bundle"
 else
   bad "M2 could not build the mutant"
+fi
+
+echo "== mutant M3: \${ROOT_RESOURCES:-} becomes \$ROOT_RESOURCES (row 1, unset, must fail under set -u)"
+sed 's/\${ROOT_RESOURCES:-}/$ROOT_RESOURCES/' "$SHIP" >"$tmp/m3.sh"
+if ! cmp -s "$tmp/m3.sh" "$SHIP"; then
+  mkproj "$tmp/m3p"
+  old=$SHIP
+  SHIP=$tmp/m3.sh
+  if drive "$tmp/m3p" >/dev/null 2>&1; then
+    bad "M3 an unguarded \$ROOT_RESOURCES passed with the variable unset"
+  else
+    ok "M3 an unguarded \$ROOT_RESOURCES aborts the unset run"
+  fi
+  SHIP=$old
+else
+  bad "M3 could not build the mutant (no \${ROOT_RESOURCES:-} in $SHIP?)"
 fi
 
 [ "$fail" = 0 ] && echo "ship-root-resources: all checks passed"
