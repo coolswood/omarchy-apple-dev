@@ -281,8 +281,10 @@ and the runner prints one warning line. The module gained `TextField`, which
 renders its text or placeholder, an underline, and a caret. Typed characters
 append at the caret, which sits at the end. Backspace removes one character
 and stops at empty. Return fires `onSubmit` when present and always blurs.
-The `KeysDemo` app has two fields and an echo label. `simview/test-m6.sh`
-runs thirteen rows plus seven mutation checks, each proven in-suite against a
+The `KeysDemo` app has two fields and an echo label. A second app,
+`FocusButtonDemo`, adds one field, one button, and a counter, so the button
+case of the end-inside rule has its own rows. `simview/test-m6.sh`
+runs seventeen rows plus nine mutation checks, each proven in-suite against a
 changed build. The M2, M3, M4, and M5 suites still pass.
 
 - Cannot prove: our own input model, not Apple's keyboard. No IME, dictation,

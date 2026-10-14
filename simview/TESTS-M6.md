@@ -43,6 +43,14 @@ pixels and zero channel difference. State is read from the log lines.
 | 10 | Run the demo flow twice | Both logs and both PNG files are byte-identical. |
 | 11 | Focus field one and type A, then begin on field two, slide off, and lift on empty space, then type B | The slide changes nothing. Field one keeps focus: state shows `first:AB,second:`. The PNG matches `golden/keys-slideoff.png`. |
 | 12 | Begin on field two, move two points inside it, lift inside it, type z | The tap completes and focuses field two: state shows `first:,second:z`. |
+| 14 | Focus the field and type H, then tap the button inside: the action fires once and the tap blurs | The next text is dropped with a warning: state stays `text:H,count:1`. |
+| 15 | Focus the field and type H, then begin on the button, slide off, and lift on empty space, then type B | No action and no blur. B goes to the field: state shows `text:HB,count:0`. |
+| 16 | Tap the button with no field focused | The action fires once with no warning: state shows `text:,count:1`. |
+| 17 | Focus the field, tap empty space, then type q | The blur applies and q is dropped with a warning: state stays `text:,count:0`. |
+
+Rows 14 to 17 run on a second demo app, `focusbuttondemo`. It has one text
+field, one button that raises a counter, and a counter label. Its checks read
+the log state lines only; it adds no goldens.
 
 ## Mutation checks
 
@@ -59,13 +67,15 @@ mutant that fails to compile or survives its row fails the suite.
 | cancelled-focus | A cancelled tap focuses its field | Row 8 state |
 | no-return-blur | Return fires `onSubmit` but keeps focus | Row 6 state |
 | no-drop-warning | Drops keys without printing the warning line | Row 7 warnings |
+| button-blur-without-end-inside | A button tap blurs the field even when the lift lands outside the button | Row 15 state |
+| button-fires-outside | The button action fires when the lift lands outside the button | Row 15 state |
 
 ## Notes
 
 - Row 4 is also the began-on-nothing blur case: the tap starts and ends on
   empty space, and the runner must blur.
-- The button case of the same rule (a gesture that begins on a button and
-  ends outside it must not blur) shares the end-inside check with the button
-  action path, which the M3 rows cover. `keysdemo` has no button, so no row
-  here drives that path with focus set.
+- Rows 14 to 17 cover the button case of the end-inside rule directly, on
+  `focusbuttondemo`. Row 15 was first shown failing against a build of main
+  with the `button-blur-without-end-inside` mutant applied; the real main
+  code passes the row.
 

@@ -116,10 +116,11 @@ sits at the end. Backspace stops at empty. Return fires `onSubmit` when
 present and always blurs.
 
 The `keysdemo` app has two fields and an echo label. Field one echoes its
-text on submit. `simview/test-m6.sh` checks focus, typing, backspace, blur,
+text on submit. A second app, `focusbuttondemo`, has one field, one button,
+and a counter. `simview/test-m6.sh` checks focus, typing, backspace, blur,
 separate field state, return, drop warnings, a cancelled tap, a slide off a
-field, the demo flow, byte determinism, and seven mutations. See
-`simview/TESTS-M6.md`.
+field, the button case of the end-inside rule, the demo flow, byte
+determinism, and nine mutations. See `simview/TESTS-M6.md`.
 
 ## Limits
 

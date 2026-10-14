@@ -27,6 +27,10 @@ run swiftc -swift-version 5 -parse-as-library -I "$b" \
   -o "$P/keysdemo" \
   "$b/SwiftUI.o" "$P/simview/Sources/KeysDemo/KeysDemo.swift" || {
   echo "FAIL keysdemo did not build"; exit 1; }
+run swiftc -swift-version 5 -parse-as-library -I "$b" \
+  -o "$P/focusbuttondemo" \
+  "$b/SwiftUI.o" "$P/simview/Sources/FocusButtonDemo/FocusButtonDemo.swift" || {
+  echo "FAIL focusbuttondemo did not build"; exit 1; }
 
 cat > "$bh/probe6.json" <<'EOF'
 [{"t_ms":0,"fingers":[{"finger":0,"phase":"stationary","x":1,"y":1}]}]
@@ -167,6 +171,59 @@ if grep -q 'text=B field=Field#1 state=first:AB,second:' "$bh/slideoff6.log" \
 if grep -q 'text=z field=Field#2 state=first:,second:z' "$bh/inside6.log"; then
   ok "row 12 tap ending inside field two focuses it"; else bad "row 12 end inside field two"; fi
 
+# Rows 14 to 17 run on focusbuttondemo: one field, one button, one label.
+run_fb() { run "$P/focusbuttondemo" --frames "$1" --out "$2"; }
+cat > "$bh/probefb.json" <<'EOF'
+[{"t_ms":0,"fingers":[{"finger":0,"phase":"stationary","x":1,"y":1}]}]
+EOF
+run_fb "$b/probefb.json" "$b/probefb.png" >"$bh/probefb.log" 2>&1 || exit 1
+fbf=$(grep '^field id=1 ' "$bh/probefb.log" | head -1 | sed 's/.*rect=//')
+fbb=$(grep '^button id=1 ' "$bh/probefb.log" | head -1 | sed 's/.*rect=//')
+[ -n "$fbf" ] && [ -n "$fbb" ] || { echo "FAIL no focusbuttondemo rects"; exit 1; }
+read -r gx gy gw gh <<<"$(echo "$fbf" | tr ',' ' ')"
+read -r bx by bw bh2 <<<"$(echo "$fbb" | tr ',' ' ')"
+fbx=$((gx + gw / 2)); fby=$((gy + gh / 2))
+fbqx=$((bx + bw / 2)); fbqy=$((by + bh2 / 2))
+
+cat > "$bh/fb14.json" <<EOF
+[{"tap":[$fbx,$fby]},
+ {"t_ms":200,"text":"H"},
+ {"tap":[$fbqx,$fbqy]},
+ {"t_ms":500,"text":"x"}]
+EOF
+run_fb "$b/fb14.json" "$b/fb14.png" >"$bh/fb14.log" 2>&1
+cat > "$bh/fb15.json" <<EOF
+[{"tap":[$fbx,$fby]},
+ {"t_ms":200,"text":"H"},
+ {"t_ms":300,"fingers":[{"finger":0,"phase":"began","x":$fbqx,"y":$fbqy}]},
+ {"t_ms":350,"fingers":[{"finger":0,"phase":"moved","x":300,"y":700}]},
+ {"t_ms":400,"fingers":[{"finger":0,"phase":"ended","x":300,"y":700}]},
+ {"t_ms":500,"text":"B"}]
+EOF
+run_fb "$b/fb15.json" "$b/fb15.png" >"$bh/fb15.log" 2>&1
+cat > "$bh/fb16.json" <<EOF
+[{"tap":[$fbqx,$fbqy]}]
+EOF
+run_fb "$b/fb16.json" "$b/fb16.png" >"$bh/fb16.log" 2>&1
+cat > "$bh/fb17.json" <<EOF
+[{"tap":[$fbx,$fby]},
+ {"tap":[300,700]},
+ {"t_ms":400,"text":"q"}]
+EOF
+run_fb "$b/fb17.json" "$b/fb17.png" >"$bh/fb17.log" 2>&1
+
+if grep -q 'warning: text x dropped (no focus)' "$bh/fb14.log" \
+  && grep -q 'text=x field=none state=text:H,count:1' "$bh/fb14.log"; then
+  ok "row 14 button tap inside fires once and blurs"; else bad "row 14 button tap inside"; fi
+if grep -q 'text=B field=Field#1 state=text:HB,count:0' "$bh/fb15.log"; then
+  ok "row 15 button slide outside changes nothing"; else bad "row 15 button slide outside"; fi
+if ! grep -q '^warning:' "$bh/fb16.log" \
+  && grep -q 'state=text:,count:1' "$bh/fb16.log"; then
+  ok "row 16 button tap with no focus fires without warning"; else bad "row 16 button tap no focus"; fi
+if grep -q 'warning: text q dropped (no focus)' "$bh/fb17.log" \
+  && grep -q 'text=q field=none state=text:,count:0' "$bh/fb17.log"; then
+  ok "row 17 tap on empty space blurs"; else bad "row 17 blur positive control"; fi
+
 mutant() {
   name=$1 old=$2 new=$3 frames=$4 check=$5
   src="$bh/mut-$name.swift"
@@ -230,5 +287,52 @@ if ! mutant no-drop-warning \
   'static func warn(_ msg: String) {\n    _ = msg\n  }' \
   "$b/nofocus6.json" check_row7; then bad 'no-drop-warning mutant failed to build'; fi
 
+mutant_fb() {
+  name=$1 old=$2 new=$3 frames=$4 check=$5
+  src="$bh/mutfb-$name.swift"
+  python3 - "$here/Sources/SwiftUI/SwiftUI.swift" "$src" "$old" "$new" <<'PY'
+import sys
+source, target, old, new = sys.argv[1:]
+old = old.replace(r"\n", "\n")
+new = new.replace(r"\n", "\n")
+data = open(source).read()
+if data.count(old) != 1:
+    raise SystemExit(f"mutation source match count {data.count(old)}, expected 1")
+open(target, "w").write(data.replace(old, new))
+PY
+  run swiftc -swift-version 5 -parse-as-library -c -module-name SwiftUI \
+    -o "$b/mutfb-$name.o" "$b/mutfb-$name.swift" || return 1
+  run swiftc -swift-version 5 -parse-as-library -I "$b" \
+    -o "$P/focusbuttondemo-mut-$name" "$b/mutfb-$name.o" "$P/simview/Sources/FocusButtonDemo/FocusButtonDemo.swift" || return 1
+  run "$P/focusbuttondemo-mut-$name" --frames "$frames" --out "$b/mutfb-$name.png" >"$bh/mutfb-$name.log" 2>&1 || return 1
+  if "$check" "$bh/mutfb-$name.log" "$bh/mutfb-$name.png"; then
+    bad "mutant $name survived"
+  else
+    ok "mutant $name failed its expected row"
+  fi
+}
+check_row15() { grep -q 'text=B field=Field#1 state=text:HB,count:0' "$1"; }
+if ! mutant_fb button-blur-without-end-inside \
+  'if inside(node) {
+          focusField = nil
+          return node.action
+        }
+        return nil' \
+  'focusField = nil
+        if inside(node) {
+          return node.action
+        }
+        return nil' \
+  "$b/fb15.json" check_row15; then bad 'button-blur-without-end-inside mutant failed to build'; fi
+if ! mutant_fb button-fires-outside \
+  'if inside(node) {
+          focusField = nil
+          return node.action
+        }
+        return nil' \
+  'focusField = nil
+        return node.action' \
+  "$b/fb15.json" check_row15; then bad 'button-fires-outside mutant failed to build'; fi
+
 if [ "$fail" -ne 0 ]; then echo "simview/test-m6.sh: FAILED"; exit 1; fi
-echo "simview/test-m6.sh: all 13 rows and 7 mutation checks passed"
+echo "simview/test-m6.sh: all 17 rows and 9 mutation checks passed"

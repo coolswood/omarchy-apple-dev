@@ -21,7 +21,9 @@
 - The simview frame file gains `key` records (a USB keyboard usage number, page 7) and `text` records (one
   character), and the module gains `TextField` with focus, a caret, and optional `onSubmit`. A completed tap focuses
   a field, a tap elsewhere blurs, and keys with no focus are dropped with a warning line. `simview/test-m6.sh` runs
-  eleven rows and six mutation checks; see `simview/TESTS-M6.md` and `receipts/2026-10-14-simview-m6.md`.
+  seventeen rows and nine mutation checks; see `simview/TESTS-M6.md` and `receipts/2026-10-14-simview-m6.md`.
+- The suite now also covers the button case of the end-inside rule: `focusbuttondemo` adds rows 14 to 17, so a
+  button tap that lifts outside its target is proven to change neither focus nor state.
 
 ### Xcode version from a .xip
 
