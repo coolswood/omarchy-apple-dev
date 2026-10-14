@@ -1,6 +1,20 @@
 # Changelog
 
-## Unreleased
+## v0.4.0
+
+### Signing with requested capabilities
+
+- Set `ASC_ENTITLEMENTS_PATH` to the app's requested entitlements plist when you run `ship.sh`. The signer copies the exact `applinks:` and `webcredentials:` Associated Domains values, never the profile's wildcard. An App Store profile grants the wildcard as the string `"*"`, and the signer accepts both that form and a list. Signing fails when the profile does not grant the requested domains.
+- The same file can request push and Sign in with Apple. Push signs with the environment the profile grants. Sign in with Apple must be requested as `["Default"]` and is signed only when the profile grants `Default`, compared as a whole value. A missing grant stops the signing and names the capability to enable. Only the main app gets these values. Offline verification checks the signed values against the profile and the request. Tests with synthetic profiles are in `tests/test_associated_domains.py`. Not checked on a device: the README says to confirm the HTTPS callback on a signed device build.
+
+### Resource layout in ship.sh
+
+- Step 2 moves the app's `PrivacyInfo.xcprivacy` to the bundle root, next to the storyboards and nibs.
+- `ROOT_RESOURCES` is opt-in. It takes space-separated patterns, for example `'*.lproj *.wav'`, and moves only the matching top-level entries of each resource bundle to the app root. It applies to the app and to each extension bundle. Unset, nothing else changes. `tests/ship-root-resources/run.sh` checks this on a synthetic bundle, with three mutants.
+
+### Localized string symbols
+
+- `tools/xcstrings_symbols.py` escapes Swift keywords with backticks, so a key such as `CONTINUE` gives a symbol that compiles. Keys that differ only in case or punctuation get no symbol, and the tool prints one warning per name. The strings stay in the compiled table. Covered by `tests/test_xcstrings_symbols.py`.
 
 ### Xcode version from a .xip
 
