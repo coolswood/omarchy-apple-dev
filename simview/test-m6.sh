@@ -330,7 +330,9 @@ if ! mutant_fb button-fires-outside \
           return node.action
         }
         return nil' \
-  'focusField = nil
+  'if inside(node) {
+          focusField = nil
+        }
         return node.action' \
   "$b/fb15.json" check_row15; then bad 'button-fires-outside mutant failed to build'; fi
 

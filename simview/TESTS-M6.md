@@ -68,7 +68,7 @@ mutant that fails to compile or survives its row fails the suite.
 | no-return-blur | Return fires `onSubmit` but keeps focus | Row 6 state |
 | no-drop-warning | Drops keys without printing the warning line | Row 7 warnings |
 | button-blur-without-end-inside | A button tap blurs the field even when the lift lands outside the button | Row 15 state |
-| button-fires-outside | The button action fires when the lift lands outside the button | Row 15 state |
+| button-fires-outside | The button action fires on a lift outside the button, with focus behavior unchanged | Row 15 state |
 
 ## Notes
 
