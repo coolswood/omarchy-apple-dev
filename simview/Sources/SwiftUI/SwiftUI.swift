@@ -7,7 +7,8 @@
 //
 // Not in this module: real SwiftUI layout, font shaping, animation, Metal.
 // M3 adds scripted touch frames. M5 adds vertical scrolling. M6 adds key
-// records, text insertion, and text field focus.
+// records, text insertion, and text field focus. M7 adds HStack, Spacer, and
+// padding.
 
 import Foundation
 
@@ -147,6 +148,10 @@ public enum Spec {
   // M6: a text field. The binding carries the text, the string is the
   // placeholder, the closure fires on Return.
   indirect case textfield(Binding<String>, String, (() -> Void)?)
+  // M7: a horizontal stack, a flexible gap, and uniform padding.
+  indirect case hstack(spacing: Int, children: [Spec])
+  case spacer
+  indirect case padded(Int, Spec)
 }
 
 public struct TupleView<T>: View {
@@ -189,6 +194,52 @@ public struct VStack<Content: View>: View {
   public var body: EmptyView { EmptyView() }
   public func _simSpec() -> Spec {
     .vstack(alignment, spacing: spacing, children: Sim.flattened(content._simSpec()))
+  }
+}
+
+// A horizontal row. Children sit left to right, `spacing` points apart, each
+// centered on the row's height. A Spacer child takes the width left over; a
+// row that holds one is as wide as the proposed width (see Sim.proposedWidth).
+public struct HStack<Content: View>: View {
+  let spacing: Int
+  let content: Content
+  public init(spacing: CGFloat? = nil, @ViewBuilder content: () -> Content) {
+    self.spacing = spacing.map(Int.init) ?? 0
+    self.content = content()
+  }
+  public typealias Body = EmptyView
+  public var body: EmptyView { EmptyView() }
+  public func _simSpec() -> Spec {
+    .hstack(spacing: spacing, children: Sim.flattened(content._simSpec()))
+  }
+}
+
+// Zero width on its own; inside an HStack it takes the leftover width. Outside
+// an HStack it does nothing. Vertical expansion in a VStack is not implemented.
+public struct Spacer: View {
+  public init() {}
+  public typealias Body = EmptyView
+  public var body: EmptyView { EmptyView() }
+  public func _simSpec() -> Spec { .spacer }
+}
+
+public struct Padded<Content: View>: View {
+  let length: Int
+  let content: Content
+  public init(length: Int, content: Content) {
+    self.length = length
+    self.content = content
+  }
+  public typealias Body = EmptyView
+  public var body: EmptyView { EmptyView() }
+  public func _simSpec() -> Spec { .padded(length, content._simSpec()) }
+}
+
+public extension View {
+  // The same length on all four edges. A button keeps its label rect as its
+  // hit area, so padding around a button does not enlarge the target.
+  func padding(_ length: CGFloat = 16) -> Padded<Self> {
+    Padded(length: Int(length), content: self)
   }
 }
 
@@ -341,6 +392,10 @@ public struct NavigationStack<Content: View>: View {
       return .tuple(kids.map(pushable))
     case .vstack(let alignment, let spacing, let kids):
       return .vstack(alignment, spacing: spacing, children: kids.map(pushable))
+    case .hstack(let spacing, let kids):
+      return .hstack(spacing: spacing, children: kids.map(pushable))
+    case .padded(let length, let child):
+      return .padded(length, pushable(child))
     case .titled(let title, let child):
       return .titled(title, pushable(child))
     default:
@@ -406,6 +461,10 @@ enum Sim {
   static let screenHeight = 844
   static let black = Pixel(r: 0, g: 0, b: 0)
   static let blue = Pixel(r: 0x00, g: 0x7A, b: 0xFF)  // #007AFF
+  // The width a flexible HStack (one that holds a Spacer) fills: the scene
+  // width less the padding wrapped around it. measure and layout keep it
+  // current while they walk a Padded node.
+  static var proposedWidth = screenWidth
   // Text field box, fixed size. Text wider than the box overflows; the
   // field does not scroll.
   static let fieldWidth = 60
@@ -449,6 +508,25 @@ enum Sim {
       return Size(w: 0, h: 1)
     case .titled(_, let child):
       return measure(child)
+    case .hstack(let spacing, let kids):
+      let flat = kids.flatMap(flattened)
+      var w = 0
+      var h = 0
+      for (i, k) in flat.enumerated() {
+        let ks = measure(k)
+        w += ks.w + (i > 0 ? spacing : 0)
+        h = max(h, ks.h)
+      }
+      if flat.contains(where: isSpacer) { w = max(w, proposedWidth) }
+      return Size(w: w, h: h)
+    case .spacer:
+      return Size(w: 0, h: 0)
+    case .padded(let length, let child):
+      let saved = proposedWidth
+      proposedWidth -= 2 * length
+      defer { proposedWidth = saved }
+      let cs = measure(child)
+      return Size(w: cs.w + 2 * length, h: cs.h + 2 * length)
     case .link:
       preconditionFailure("simview: NavigationLink outside a NavigationStack")
     case .scrollview:
@@ -516,6 +594,17 @@ enum Sim {
     case .titled(_, let child):
       layout(child, at: x, y: y, width: width, color: color,
              nextButton: &nextButton, into: &out)
+    case .hstack(let spacing, let kids):
+      layoutHStack(kids.flatMap(flattened), spacing: spacing, at: x, y: y,
+                   width: size.w, color: color, nextButton: &nextButton, into: &out)
+    case .spacer:
+      break
+    case .padded(let length, let child):
+      let saved = proposedWidth
+      proposedWidth -= 2 * length
+      defer { proposedWidth = saved }
+      layout(child, at: x + length, y: y + length, width: max(width - 2 * length, 0),
+             color: color, nextButton: &nextButton, into: &out)
     case .link:
       preconditionFailure("simview: NavigationLink outside a NavigationStack")
     case .scrollview(let offset, let content):
@@ -566,6 +655,39 @@ enum Sim {
     layout(screen, at: (screenWidth - size.w) / 2,
            y: navBarHeight + (screenHeight - navBarHeight - size.h) / 2,
            width: size.w, color: black, nextButton: &nextButton, into: &out)
+  }
+
+  static func isSpacer(_ s: Spec) -> Bool {
+    if case .spacer = s { return true }
+    return false
+  }
+
+  // Left to right. Each Spacer takes an equal share of the width the other
+  // children and the gaps leave; the last spacer takes the remainder of the
+  // integer division. Children are centered on the row height.
+  static func layoutHStack(_ kids: [Spec], spacing: Int, at x: Int, y: Int,
+                           width: Int, color: Pixel, nextButton: inout Int,
+                           into out: inout [PlacedNode]) {
+    let sizes = kids.map(measure)
+    let spacers = kids.filter(isSpacer).count
+    let fixed = sizes.reduce(0) { $0 + $1.w } + spacing * max(kids.count - 1, 0)
+    var extra = spacers > 0 ? max(width - fixed, 0) : 0
+    var left = spacers
+    let rowHeight = sizes.map { $0.h }.max() ?? 0
+    var cx = x
+    for (i, k) in kids.enumerated() {
+      if i > 0 { cx += spacing }
+      if isSpacer(k) {
+        let share = extra / left
+        extra -= share
+        left -= 1
+        cx += share
+        continue
+      }
+      layout(k, at: cx, y: y + (rowHeight - sizes[i].h) / 2, width: sizes[i].w,
+             color: color, nextButton: &nextButton, into: &out)
+      cx += sizes[i].w
+    }
   }
 
   static func layoutStack(_ kids: [Spec], spacing: Int, at x: Int, y: Int,
@@ -651,6 +773,8 @@ enum Sim {
       return kids.lazy.compactMap(firstTitle).first
     case .vstack(_, _, let kids):
       return kids.lazy.compactMap(firstTitle).first
+    case .padded(_, let child):
+      return firstTitle(child)
     default:
       return nil
     }

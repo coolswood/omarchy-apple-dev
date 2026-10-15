@@ -122,6 +122,21 @@ separate field state, return, drop warnings, a cancelled tap, a slide off a
 field, the button case of the end-inside rule, the demo flow, byte
 determinism, and nine mutations. See `simview/TESTS-M6.md`.
 
+## Milestone M7: rows and padding
+
+M7 adds `HStack`, `Spacer`, and `.padding(_:)`. A row places its children left
+to right with `spacing` points between them, each centered on the row height.
+A `Spacer` takes the width that is left. `.padding(n)` adds n points on all
+four edges. The rules, and the numbers the tests check, are in
+`simview/TESTS-M7.md`.
+
+The `rowdemo` app shows a padded row with a spacer, a row of two buttons, a
+centered label, and a counter. `rownavdemo` puts a `NavigationLink` inside a
+padded row. `simview/test-m7.sh` reads button rects from the log and text
+positions from the PNG with `simview/inkbox.py`, before it compares goldens.
+It also checks taps, the gap between buttons, a link inside a row,
+determinism, and five mutations.
+
 ## Limits
 
 This is not real SwiftUI layout, fonts, animation, or Metal. It proves nothing

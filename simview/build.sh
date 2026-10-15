@@ -48,4 +48,10 @@ run swiftc -swift-version 5 -parse-as-library -I "$b" \
 run swiftc -swift-version 5 -parse-as-library -I "$b" \
   -o "$P/focusbuttondemo" \
   "$b/SwiftUI.o" "$P/simview/Sources/FocusButtonDemo/FocusButtonDemo.swift"
-echo "built $P/simview-demo, $P/m3app, $P/nestedapp, $P/overlapapp, $P/navdemo, $P/scrolldemo, $P/keysdemo and $P/focusbuttondemo"
+run swiftc -swift-version 5 -parse-as-library -I "$b" \
+  -o "$P/rowdemo" \
+  "$b/SwiftUI.o" "$P/simview/Sources/RowDemo/RowDemo.swift"
+run swiftc -swift-version 5 -parse-as-library -I "$b" \
+  -o "$P/rownavdemo" \
+  "$b/SwiftUI.o" "$P/simview/Sources/RowNavDemo/RowNavDemo.swift"
+echo "built $P/simview-demo, $P/m3app, $P/nestedapp, $P/overlapapp, $P/navdemo, $P/scrolldemo, $P/keysdemo, $P/focusbuttondemo, $P/rowdemo and $P/rownavdemo"

@@ -292,6 +292,25 @@ changed build. The M2, M3, M4, and M5 suites still pass.
   typed character is its literal self. No claim about Apple's focus ring or
   caret drawing.
 
+### M7: rows and padding
+
+The rules and the test rows are in `simview/TESTS-M7.md`.
+
+Landed on branch `simview-m7` ([receipt](../receipts/2026-10-15-simview-m7.md)).
+The module gained `HStack`, `Spacer`, and `.padding(_:)`. A row places its
+children left to right and centers each on the row height. A `Spacer` takes
+the width that is left. A row with a spacer is as wide as the scene less the
+padding around it. Measured on `rowdemo`: the padded row spans 390 by 29
+points, the right label ends at the padding edge (x 380), and two spacers
+center `mid` at x 186 to 202. The text positions are read from the PNG, and
+they match the hand arithmetic in the test file. `simview/test-m7.sh` runs
+eight rows plus five mutation checks. The M2 to M6 suites still pass.
+
+- Cannot prove: Apple's row layout. No `alignment:`, no `Spacer(minLength:)`,
+  no per-edge padding, no `frame`, no `Divider`, and no vertical `Spacer`.
+  A call that uses one does not compile. The width a spacer row fills can
+  differ from Apple's in a nested stack.
+
 ## Standing rules
 
 - This project adds Linux-only checks. It does not replace the fallback ladder in
