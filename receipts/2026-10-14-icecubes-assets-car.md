@@ -31,9 +31,8 @@ They are not shown to cause any App Store processing failure, or the support cas
   `tools/asc.py upload` runs it before its first App Store Connect call.
   `asc.py validate` reports one check per car.
 - On the 55 retained original cars the check agrees with assetutil on 55 of 55.
-  It flags 16 more cars that assetutil accepted after `-U`.
-  Each holds a packed atlas whose rows do not match its stride.
-  It also flags the empty car after `-U`, which assetutil accepted.
+  After `assetutil -U` rewrote the BITMAPKEYS rows, assetutil accepted cars that the check still flags, for chunks whose decoded size does not match the TVL stride and for the empty car.
+  The check is stricter than Apple's validator there. No count is claimed.
 
 ## Controls
 
