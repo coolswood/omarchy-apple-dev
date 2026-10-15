@@ -1722,11 +1722,11 @@ Two more notes for a Rust user on Linux:
 
 ## Assets.car files that Apple's assetutil rejects, 2026-10-14
 
-Apple Developer Support case 102994382823 names an `Assets.car` of the IceCubes app
-(App 6819399771) as corrupted. The failed upload is not retained, so the case cannot be matched to
-a build. The retained AssetKit cars show three defects that Apple's own validator reports on a car
-that `assetutil --info` reads without error. `assetutil --validate-file` on a Mac is the oracle
-here. It is used to judge cars. No car it wrote is shipped.
+An Apple Developer Support case named an `Assets.car` of an IceCubes upload as corrupted. The failed
+upload is not retained, so the case cannot be matched to a build. The retained AssetKit cars show
+three defects that Apple's own validator reports on a car that `assetutil --info` reads without
+error. `assetutil --validate-file` on a Mac is the oracle here. It is used to judge cars. No car it
+wrote is shipped.
 
 1. BITMAPKEYS. Each variable field of the 52-byte descriptor is the OR of `1 << token` over the
    asset's renditions, for one KEYFORMAT attribute. Xcode 27.0 actool writes exactly that for all
