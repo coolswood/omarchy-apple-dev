@@ -79,6 +79,16 @@ def with_one_bitmapkeys_row_dropped(data):
     return bytes(out)
 
 
+def with_all_identifiers_zero(data):
+    """Every rendition key carries identifier 0."""
+    bom = car_check._Bom(data)
+    at = car_check._key_format(bom).index(17)
+    out = bytearray(data)
+    for key_block, _value in bom.leaves("RENDITIONS"):
+        struct.pack_into("<H", out, bom.blocks[key_block][0] + 2 * at, 0)
+    return bytes(out)
+
+
 class CarCheckTest(unittest.TestCase):
     def test_cars_apple_validates_pass(self):
         # assetutil --validate-file rc 0 on each (tests/car/README.md)
@@ -120,6 +130,23 @@ class CarCheckTest(unittest.TestCase):
         data = car("action-assetkit.car")
         problems = car_check.check_car(with_bytes(data, first_chunk_offset(data), b"XXXX"))
         self.assertTrue(any("no KCBC magic" in p for p in problems), problems)
+
+    def test_writing_the_dmp2_marker_does_not_switch_off_the_chunk_check(self):
+        # Offset +16 of the first chunk is body+32, where Apple's dmp2 record keeps its marker.
+        data = car("action-assetkit.car")
+        at = first_chunk_offset(data)
+        problems = car_check.check_car(with_bytes(with_bytes(data, at, b"XXXX"), at + 16, b"dmp2"))
+        self.assertTrue(any("no KCBC magic" in p for p in problems), problems)
+
+    def test_an_unknown_mlec_layout_word_fails(self):
+        data = car("action-assetkit.car")
+        problems = car_check.check_car(with_bytes(data, first_chunk_offset(data) - 8, struct.pack("<I", 2)))
+        self.assertTrue(any("layout word 2" in p for p in problems), problems)
+
+    def test_a_non_atlas_identifier_zero_needs_its_row(self):
+        data = with_all_identifiers_zero(car("action-assetkit.car"))
+        problems = car_check.check_car(with_one_bitmapkeys_row_dropped(data))
+        self.assertTrue(any("no row for identifier" in p for p in problems), problems)
 
     def test_an_unreadable_lzfse_block_fails(self):
         data = car("action-assetkit.car")

@@ -115,14 +115,17 @@ def _check_bitmap_keys(bom, problems):
         problems.append("KEYFORMAT has no identifier or scale attribute")
         return
     ident_at, scale_at = fmt.index(17), fmt.index(12)
-    masks = {}
-    for key_block, _value in bom.leaves("RENDITIONS"):
+    masks, has_other = {}, set()
+    for key_block, value in bom.leaves("RENDITIONS"):
         key = bom.block(key_block)
         tokens = struct.unpack(f"<{len(key) // 2}H", key)
         row = masks.setdefault(tokens[ident_at], [0] * n)
         for i, token in enumerate(tokens[:n]):
             if token < 32:
                 row[i] |= 1 << token
+        csi = bom.block(value)
+        if csi[:4] != b"ISTC" or not csi[40:168].startswith(b"ZZZZPackedAsset"):
+            has_other.add(tokens[ident_at])
     if "BITMAPKEYS" not in bom.vars:
         if masks:
             problems.append("no BITMAPKEYS tree although the car has renditions: assetutil reports invalid bitmapindex")
@@ -147,8 +150,8 @@ def _check_bitmap_keys(bom, problems):
                 diff = [(i, w, g) for i, (w, g) in enumerate(zip(words, want)) if w != g]
                 problems.append(f"BITMAPKEYS row for identifier {identifier} differs from its renditions "
                                 f"(word index, stored, expected): {diff[:4]}")
-    # Identifier 0 is the packed symbol atlas, which has no row in any Apple car.
-    missing = sorted(set(masks) - seen - {0})
+    # An identifier whose renditions are all packed symbol atlases has no row in any Xcode actool car.
+    missing = sorted(has_other - seen)
     if missing:
         problems.append(f"BITMAPKEYS has no row for identifier(s) {missing[:5]} although RENDITIONS holds them")
     if bad > MAX_PER_KIND:
@@ -176,12 +179,21 @@ def _check_image_blocks(bom, problems):
         height = struct.unpack_from("<I", csi, 16)[0]
         name = csi[40:168].split(b"\0")[0].decode(errors="replace")
         stride, body = _tvl_stride(csi)
-        # Only the KCBC form is read. Other bodies (vectors, colors, Apple's dmp2 pixel record) are not.
-        if csi[body:body + 4] != b"MLEC" or csi[body + 32:body + 36] == b"dmp2":
+        # MLEC bodies come in two forms. Retained cars (9156 renditions, Xcode actool and AssetKit): the word at +8 is 4 for
+        # chunked KCBC bodies (9104) and 11 for Apple's dmp2 pixel record (52). Only the dmp2 record, with its marker at +32,
+        # is not read here; any other value is reported.
+        if csi[body:body + 4] != b"MLEC":
+            continue
+        layout = struct.unpack_from("<I", csi, body + 8)[0]
+        if layout == 11 and csi[body + 32:body + 36] == b"dmp2":
             continue
         count = struct.unpack_from("<I", csi, body + 12)[0]
         pos, rows_total = body + 16, 0
-        problem = None if stride is not None else "an MLEC body with no TVL 1007 stride"
+        problem = None
+        if layout != 4:
+            problem = f"MLEC layout word {layout} is neither the chunked form (4) nor Apple's dmp2 record (11)"
+        elif stride is None:
+            problem = "an MLEC body with no TVL 1007 stride"
         for chunk in range(count if problem is None else 0):
             if csi[pos:pos + 4] != b"KCBC":
                 problem = f"chunk {chunk} has no KCBC magic"
