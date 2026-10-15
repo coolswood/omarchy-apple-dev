@@ -49,6 +49,43 @@ with `developer dvt launch <bundle id> --stream` and prints stdout and stderr fo
 a report about the app, not an error of the script. A stream from a running app through `--console` is
 not yet proven on a phone. The same flag works on the cable path, `./device-run.sh --rsd HOST PORT PKG`.
 
+## Install with no mDNS (Tailscale, or a plain IP)
+
+Xcode finds a wireless phone with mDNS (Bonjour). This route does not use mDNS. You give the phone's IP address, and
+`tools/tailnet-tunnel.py` connects to it directly and scans the RemotePairing ports 49152 to 49167 (or use `--port`).
+
+Install a signed ipa, one command:
+
+```sh
+./device-run.sh --over-tailnet 100.x.y.z path/to/App.ipa
+```
+
+Install only, with the tunnel under your control:
+
+```sh
+sudo -v
+~/pmd3/bin/python tools/tailnet-tunnel.py 100.x.y.z --hold 600    # prints: RSD fd..::1 65002
+~/pmd3/bin/pymobiledevice3 apps install path/to/App.ipa --rsd fd..::1 65002
+```
+
+Both commands need the one-time USB pairing above, iOS 27, and Python 3.13 or newer.
+
+What is measured and what is not:
+
+A Tailscale address is measured on iOS 27.0.1 (table below). Install and launch work from hosts that are not on the
+phone's subnet.
+
+A plain LAN address with no Tailscale is not measured. The host argument goes straight to the tunnel code, and the
+phone answers RemotePairing from any routed address. So `--over-tailnet 192.168.x.y` should work. The name of the flag
+is only a label. If you try it, tell us the result.
+
+`device-run.sh --network` is the mDNS route. It is blocked for a Linux host (see the note in `device-run.sh`). Use the
+commands above instead.
+
+On iOS 26 and older, the phone offers no way to add a Linux host. Use USB.
+
+We have no measurement on Apple detection or account risk, so this page makes no claim on it.
+
 ## Travel checklist
 
 1. Keep Wi-Fi on. The phone needs a Wi-Fi connection (any network, any subnet). On cellular only, the RemotePairing port is closed.

@@ -275,8 +275,8 @@ Then, from any tailnet host (`tailscale status` shows the phone's `100.x` addres
 | Screen locked | yes (screenshot shows the lock screen) |
 | Wi-Fi off, cellular only | **no**: the phone closes the RemotePairing port |
 
-Details, the failure list with fixes, and the parked phone-side app note are
-in [docs/OVER-TAILNET.md](docs/OVER-TAILNET.md).
+Details, the failure list with fixes, the install-with-no-mDNS commands (Tailscale or a plain IP) and the parked
+phone-side app note are in [docs/OVER-TAILNET.md](docs/OVER-TAILNET.md).
 
 ## Ship apps to the App Store and TestFlight
 
