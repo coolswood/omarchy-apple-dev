@@ -744,10 +744,10 @@ def _check_assets(check, app, info, ipad):
     car = app / "Assets.car"
     sizes = {(w, h) for w, h, _ in car_renditions(car)} if car.exists() else set()
     check(car.exists(), f"Assets.car present ({len(sizes)} rendition sizes)")
-    for car_file in sorted(app.rglob("Assets.car")):
+    for car_file in sorted(app.rglob("*.car")):
         problems = car_check.check_car(car_file.read_bytes())
-        check(not problems, f"{car_file.relative_to(app)} passes the structural check"
-              + (": " + "; ".join(problems) if problems else ""))
+        check(not problems, f"{car_file.relative_to(app)} structural check "
+              + ("failed: " + "; ".join(problems) if problems else "passed"))
     # actool 27.0 stores only the 1024 icon for a single-size AppIcon (the form App Store
     # processing accepted, FINDINGS.md 35); a multi-size set must then be complete.
     needed = {(1024, 1024): "App Store 1024"}
@@ -975,7 +975,7 @@ def upload(ipa):
     if broken:
         for name, problems in broken.items():
             print(f"FAIL {name}: " + "; ".join(problems), file=sys.stderr)
-        die(f"{len(broken)} Assets.car file(s) in {ipa.name} fail the structural check; nothing was sent to App Store Connect")
+        die(f"{len(broken)} .car file(s) in {ipa.name} fail the structural check; nothing was sent to App Store Connect")
     with zipfile.ZipFile(ipa) as z:
         info_name = next(n for n in z.namelist() if n.count("/") == 2 and n.endswith(".app/Info.plist"))
         info = plistlib.loads(z.read(info_name))

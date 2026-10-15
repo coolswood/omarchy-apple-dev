@@ -52,6 +52,33 @@ def with_bitmapkeys_word(data, word_index, value):
     return bytes(out)
 
 
+def first_chunk_offset(data):
+    """File offset of the first KCBC chunk header of the first KCBC rendition of a car."""
+    bom = car_check._Bom(data)
+    for _key, block in bom.leaves("RENDITIONS"):
+        csi = bom.block(block)
+        stride, body = car_check._tvl_stride(csi)
+        if stride is not None and csi[body:body + 4] == b"MLEC" and csi[body + 16:body + 20] == b"KCBC":
+            return bom.blocks[block][0] + body + 16
+    raise AssertionError("no chunked rendition in the fixture")
+
+
+def with_bytes(data, offset, new):
+    out = bytearray(data)
+    out[offset:offset + len(new)] = new
+    return bytes(out)
+
+
+def with_one_bitmapkeys_row_dropped(data):
+    bom = car_check._Bom(data)
+    head = bom.block(bom.vars["BITMAPKEYS"])
+    node = struct.unpack(">I", head[8:12])[0]
+    count = struct.unpack(">H", bom.block(node)[2:4])[0]
+    out = bytearray(data)
+    struct.pack_into(">H", out, bom.blocks[node][0] + 2, count - 1)
+    return bytes(out)
+
+
 class CarCheckTest(unittest.TestCase):
     def test_cars_apple_validates_pass(self):
         # assetutil --validate-file rc 0 on each (tests/car/README.md)
@@ -81,6 +108,28 @@ class CarCheckTest(unittest.TestCase):
         data = car("colors-xcode-actool.car")
         self.assertTrue(car_check.check_car(data[:len(data) // 2]))
         self.assertTrue(car_check.check_car(b"BOMStore" + b"\0" * 8))
+
+    def test_a_dropped_bitmapkeys_row_fails(self):
+        # The fixture has two rows; the tree keeps one while RENDITIONS still holds both identifiers.
+        data = car("colors-assetkit-old-assetutil-U.car")
+        self.assertEqual(car_check.check_car(data), [])
+        problems = car_check.check_car(with_one_bitmapkeys_row_dropped(data))
+        self.assertTrue(any("no row for identifier" in p for p in problems), problems)
+
+    def test_a_corrupt_first_kcbc_chunk_fails(self):
+        data = car("action-assetkit.car")
+        problems = car_check.check_car(with_bytes(data, first_chunk_offset(data), b"XXXX"))
+        self.assertTrue(any("no KCBC magic" in p for p in problems), problems)
+
+    def test_an_unreadable_lzfse_block_fails(self):
+        data = car("action-assetkit.car")
+        at = first_chunk_offset(data)
+        broken_magic = with_bytes(data, at + 20, b"zzzz")
+        truncated = with_bytes(data, at + 16, struct.pack("<I", 8))
+        for name, mutant in (("unknown block magic", broken_magic), ("truncated block", truncated)):
+            with self.subTest(name):
+                problems = car_check.check_car(mutant)
+                self.assertTrue(any("cannot be read" in p for p in problems), problems)
 
     def test_unused_bom_slot_is_not_bounds_checked(self):
         # Apple's actool writes unused index slots as (0, 0), AssetKit as (offset, 0): length 0 means no block.

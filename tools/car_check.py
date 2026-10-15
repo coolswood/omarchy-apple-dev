@@ -79,7 +79,7 @@ class _Bom:
 
 
 def _lzfse_raw_size(stream):
-    """Bytes a LZFSE stream decodes to, from its block headers, or None for a block kind not read here."""
+    """Bytes a LZFSE stream decodes to, from its block headers, or None for a block kind not read here or a stream cut short."""
     pos, total = 0, 0
     while pos + 4 <= len(stream):
         magic = stream[pos:pos + 4]
@@ -88,10 +88,10 @@ def _lzfse_raw_size(stream):
         if magic == b"bvx-":
             n = struct.unpack_from("<I", stream, pos + 4)[0]
             total, pos = total + n, pos + 8 + n
-        elif magic == b"bvxn":
+        elif magic == b"bvxn" and pos + 12 <= len(stream):
             n_raw, n_payload = struct.unpack_from("<2I", stream, pos + 4)
             total, pos = total + n_raw, pos + 12 + n_payload
-        elif magic == b"bvx2":
+        elif magic == b"bvx2" and pos + 32 <= len(stream):
             n_raw = struct.unpack_from("<I", stream, pos + 4)[0]
             p0, p1, p2 = struct.unpack_from("<3Q", stream, pos + 8)
             header_size = p2 & 0xFFFFFFFF
@@ -128,7 +128,9 @@ def _check_bitmap_keys(bom, problems):
             problems.append("no BITMAPKEYS tree although the car has renditions: assetutil reports invalid bitmapindex")
         return
     bad = 0
+    seen = set()
     for identifier, value in bom.leaves("BITMAPKEYS"):
+        seen.add(identifier)
         raw = bom.block(value)
         words = struct.unpack(f"<{len(raw) // 4}I", raw)
         row = masks.get(identifier)
@@ -145,6 +147,10 @@ def _check_bitmap_keys(bom, problems):
                 diff = [(i, w, g) for i, (w, g) in enumerate(zip(words, want)) if w != g]
                 problems.append(f"BITMAPKEYS row for identifier {identifier} differs from its renditions "
                                 f"(word index, stored, expected): {diff[:4]}")
+    # Identifier 0 is the packed symbol atlas, which has no row in any Apple car.
+    missing = sorted(set(masks) - seen - {0})
+    if missing:
+        problems.append(f"BITMAPKEYS has no row for identifier(s) {missing[:5]} although RENDITIONS holds them")
     if bad > MAX_PER_KIND:
         problems.append(f"BITMAPKEYS: {bad} rows in all differ from their renditions")
 
@@ -170,17 +176,22 @@ def _check_image_blocks(bom, problems):
         height = struct.unpack_from("<I", csi, 16)[0]
         name = csi[40:168].split(b"\0")[0].decode(errors="replace")
         stride, body = _tvl_stride(csi)
-        if stride is None or csi[body:body + 4] != b"MLEC" or csi[body + 16:body + 20] != b"KCBC":
+        # Only the KCBC form is read. Other bodies (vectors, colors, Apple's dmp2 pixel record) are not.
+        if csi[body:body + 4] != b"MLEC" or csi[body + 32:body + 36] == b"dmp2":
             continue
         count = struct.unpack_from("<I", csi, body + 12)[0]
-        pos, rows_total, problem = body + 16, 0, None
-        for chunk in range(count):
+        pos, rows_total = body + 16, 0
+        problem = None if stride is not None else "an MLEC body with no TVL 1007 stride"
+        for chunk in range(count if problem is None else 0):
             if csi[pos:pos + 4] != b"KCBC":
                 problem = f"chunk {chunk} has no KCBC magic"
                 break
             rows, size = struct.unpack_from("<2I", csi, pos + 12)
             raw = _lzfse_raw_size(csi[pos + 20:pos + 20 + size])
-            if raw is not None and raw != rows * stride:
+            if raw is None:
+                problem = f"chunk {chunk}: the LZFSE block kind or length cannot be read"
+                break
+            if raw != rows * stride:
                 problem = f"chunk {chunk}: {rows} rows decode to {raw} bytes, the TVL stride {stride} wants {rows * stride}"
                 break
             rows_total, pos = rows_total + rows, pos + 20 + size
