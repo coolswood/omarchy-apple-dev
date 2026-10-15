@@ -1043,8 +1043,11 @@ each now caught or fixed:
 3. Processing that never finished, again. The app's resource bundle held an
    empty `Assets.car`: the adapter symlinks `Preview Assets.xcassets`, and
    Foundation on Linux lists a symlinked directory's children as files, so
-   `actool` found no assets. `actool` now resolves symlinked inputs. App Store
-   processing also stalls on an empty car, not only on a malformed one.
+   `actool` found no assets. `actool` now resolves symlinked inputs. That
+   build never finished processing, and an empty car is one possible cause.
+   The 2026-10-14 car data does not isolate it: an empty car without a
+   BITMAPKEYS tree appears in 17 retained car entries, 7 of them in builds
+   App Store Connect marked COMPLETE. `tools/car_check.py` refuses such a car.
 
 The large MastodonAsset catalog needed three AssetKit fixes (baf0f98):
 multi-page BOM trees (Apple's `assetutil` refused a 778-entry single leaf),

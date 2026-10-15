@@ -82,6 +82,20 @@ class CarCheckTest(unittest.TestCase):
         self.assertTrue(car_check.check_car(data[:len(data) // 2]))
         self.assertTrue(car_check.check_car(b"BOMStore" + b"\0" * 8))
 
+    def test_unused_bom_slot_is_not_bounds_checked(self):
+        # Apple's actool writes unused index slots as (0, 0), AssetKit as (offset, 0): length 0 means no block.
+        data = bytearray(car("colors-xcode-actool.car"))
+        index_off, = struct.unpack(">I", data[16:20])
+        count, = struct.unpack(">I", data[index_off:index_off + 4])
+        slot = next(i for i in range(count) if struct.unpack(">2I", data[index_off + 4 + 8 * i:index_off + 12 + 8 * i])[1] == 0)
+        struct.pack_into(">2I", data, index_off + 4 + 8 * slot, len(data) + 1000, 0)
+        self.assertEqual(car_check.check_car(bytes(data)), [])
+
+    def test_car_without_renditions_fails(self):
+        # assetutil --validate-file: "invalid bitmapindex" (rc 1) on this empty car of the 2026-10-05 builds.
+        problems = car_check.check_car(car("empty-assetkit-old.car"))
+        self.assertTrue(any("no renditions" in p for p in problems), problems)
+
     def test_check_ipa_reads_nested_bundles_and_extensions(self):
         good, bad_keys = car("colors-xcode-actool.car"), car("colors-assetkit-old.car")
         bad_stride = with_stride_change(car("action-assetkit.car"), 16)

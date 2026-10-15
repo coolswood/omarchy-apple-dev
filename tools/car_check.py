@@ -38,10 +38,9 @@ class _Bom:
         if index_off + 4 + 8 * n > len(data):
             raise CarError(f"BOM index declares {n} entries but the file ends inside the index table")
         self.blocks = [struct.unpack(">2I", data[index_off + 4 + 8 * i:index_off + 12 + 8 * i]) for i in range(n)]
+        # Unused slots: (0, 0) from actool, (offset, 0) from AssetKit, (0xFFFFFFFF, 0xFFFFFFFF) after assetutil -U.
         for i, (off, length) in enumerate(self.blocks):
-            if off == 0xFFFFFFFF:
-                continue
-            if off + length > len(data):
+            if length and off != 0xFFFFFFFF and off + length > len(data):
                 raise CarError(f"BOM block {i} ends at {off + length}, past the file end {len(data)}")
         count = struct.unpack(">I", data[vars_off:vars_off + 4])[0]
         pos, self.vars = vars_off + 4, {}
@@ -204,6 +203,8 @@ def check_car(data):
         for var in ("CARHEADER", "KEYFORMAT", "RENDITIONS", "FACETKEYS"):
             if var not in bom.vars:
                 raise CarError(f"BOM variable {var} is missing")
+        if not bom.leaves("RENDITIONS"):
+            problems.append("car has no renditions (assetutil reports invalid bitmapindex)")
         _check_bitmap_keys(bom, problems)
         _check_image_blocks(bom, problems)
     except (CarError, struct.error, IndexError, KeyError) as error:
@@ -212,10 +213,10 @@ def check_car(data):
 
 
 def check_ipa(ipa):
-    """{archive member: problems} for every Assets.car in an .ipa (app, nested bundles, extensions, frameworks)."""
+    """{archive member: problems} for every .car in an .ipa (app, nested bundles, extensions, frameworks)."""
     found = {}
     with zipfile.ZipFile(ipa) as z:
         for name in z.namelist():
-            if name.endswith("/Assets.car") or name == "Assets.car":
+            if name.endswith(".car"):
                 found[name] = check_car(z.read(name))
     return found
