@@ -1,0 +1,131 @@
+"""tools/car_check.py against real cars (tests/car/README.md) and mutants of them, and the upload gate in tools/asc.py."""
+import io
+import os
+import plistlib
+import struct
+import subprocess
+import sys
+import tempfile
+import unittest
+import zipfile
+from pathlib import Path
+
+HERE = Path(__file__).resolve().parent
+TOOLS = HERE.parent / "tools"
+CARS = HERE / "car"
+sys.path.insert(0, str(TOOLS))
+import car_check  # noqa: E402
+
+
+def car(name):
+    return (CARS / name).read_bytes()
+
+
+def first_chunked_rendition(data):
+    """(BOM, block index, TVL 1007 value offset in the file) of the first KCBC rendition of a car."""
+    bom = car_check._Bom(data)
+    for _key, block in bom.leaves("RENDITIONS"):
+        csi = bom.block(block)
+        stride, body = car_check._tvl_stride(csi)
+        if stride is not None and csi[body:body + 4] == b"MLEC" and csi[body + 16:body + 20] == b"KCBC":
+            pos = 184
+            while pos < body:
+                kind, size = struct.unpack_from("<2I", csi, pos)
+                if kind == 1007:
+                    return bom, block, bom.blocks[block][0] + pos + 8
+                pos += 8 + size
+    raise AssertionError("no chunked rendition in the fixture")
+
+
+def with_stride_change(data, delta):
+    bom, _block, offset = first_chunked_rendition(data)
+    out = bytearray(data)
+    struct.pack_into("<I", out, offset, struct.unpack_from("<I", data, offset)[0] + delta)
+    return bytes(out)
+
+
+def with_bitmapkeys_word(data, word_index, value):
+    bom = car_check._Bom(data)
+    _identifier, block = bom.leaves("BITMAPKEYS")[0]
+    out = bytearray(data)
+    struct.pack_into("<I", out, bom.blocks[block][0] + 4 * word_index, value)
+    return bytes(out)
+
+
+class CarCheckTest(unittest.TestCase):
+    def test_cars_apple_validates_pass(self):
+        # assetutil --validate-file rc 0 on each (tests/car/README.md)
+        for name in ("colors-xcode-actool.car", "action-assetkit.car", "colors-assetkit-old-assetutil-U.car"):
+            with self.subTest(name):
+                self.assertEqual(car_check.check_car(car(name)), [])
+
+    def test_old_assetkit_car_fails_on_bitmapkeys(self):
+        # assetutil --validate-file: "invalid bitmapindex" (rc 1)
+        problems = car_check.check_car(car("colors-assetkit-old.car"))
+        self.assertTrue(problems)
+        self.assertTrue(all("BITMAPKEYS" in p for p in problems), problems)
+
+    def test_bitmapkeys_scale_mask_mutant_fails(self):
+        problems = car_check.check_car(with_bitmapkeys_word(car("colors-xcode-actool.car"), 6, 0x0E))
+        self.assertTrue(any("BITMAPKEYS" in p for p in problems), problems)
+
+    def test_stride_mutants_fail_and_identity_passes(self):
+        base = car("action-assetkit.car")
+        self.assertEqual(car_check.check_car(with_stride_change(base, 0)), [])
+        for delta in (16, -2):
+            with self.subTest(delta=delta):
+                problems = car_check.check_car(with_stride_change(base, delta))
+                self.assertTrue(any("stride" in p for p in problems), problems)
+
+    def test_truncated_car_fails(self):
+        data = car("colors-xcode-actool.car")
+        self.assertTrue(car_check.check_car(data[:len(data) // 2]))
+        self.assertTrue(car_check.check_car(b"BOMStore" + b"\0" * 8))
+
+    def test_check_ipa_reads_nested_bundles_and_extensions(self):
+        good, bad_keys = car("colors-xcode-actool.car"), car("colors-assetkit-old.car")
+        bad_stride = with_stride_change(car("action-assetkit.car"), 16)
+        ipa = io.BytesIO()
+        with zipfile.ZipFile(ipa, "w") as z:
+            z.writestr("Payload/A.app/Assets.car", good)
+            z.writestr("Payload/A.app/DesignSystem_DesignSystem.bundle/Assets.car", bad_keys)
+            z.writestr("Payload/A.app/PlugIns/X.appex/Assets.car", bad_stride)
+            z.writestr("Payload/A.app/Info.plist", b"")
+        with tempfile.TemporaryDirectory() as tmp:
+            path = Path(tmp, "a.ipa")
+            path.write_bytes(ipa.getvalue())
+            found = car_check.check_ipa(path)
+        self.assertEqual(sorted(found), [
+            "Payload/A.app/Assets.car",
+            "Payload/A.app/DesignSystem_DesignSystem.bundle/Assets.car",
+            "Payload/A.app/PlugIns/X.appex/Assets.car",
+        ])
+        self.assertEqual(found["Payload/A.app/Assets.car"], [])
+        self.assertTrue(found["Payload/A.app/DesignSystem_DesignSystem.bundle/Assets.car"])
+        self.assertTrue(found["Payload/A.app/PlugIns/X.appex/Assets.car"])
+
+
+class UploadGateTest(unittest.TestCase):
+    def test_upload_refuses_a_bad_nested_car_before_any_network_or_key_use(self):
+        try:
+            import cryptography  # noqa: F401
+        except ImportError:
+            self.skipTest("tools/asc.py needs the cryptography module")
+        with tempfile.TemporaryDirectory() as tmp:
+            ipa = Path(tmp, "bad.ipa")
+            with zipfile.ZipFile(ipa, "w") as z:
+                z.writestr("Payload/A.app/Info.plist", plistlib.dumps({
+                    "CFBundleIdentifier": "com.example.a", "CFBundleShortVersionString": "1.0", "CFBundleVersion": "1"}))
+                z.writestr("Payload/A.app/PlugIns/X.appex/Assets.car", car("colors-assetkit-old.car"))
+            env = {k: v for k, v in os.environ.items() if not k.startswith("ASC_")}
+            run = subprocess.run([sys.executable, str(TOOLS / "asc.py"), "upload", str(ipa)],
+                                 capture_output=True, text=True, env=env, timeout=60)
+        self.assertNotEqual(run.returncode, 0)
+        self.assertIn("structural check", run.stderr)
+        self.assertIn("PlugIns/X.appex/Assets.car", run.stderr)
+        # Without the gate the first thing upload does is read the API key, which this environment lacks.
+        self.assertNotIn("ASC_KEY_ID", run.stderr)
+
+
+if __name__ == "__main__":
+    unittest.main()

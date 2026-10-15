@@ -32,6 +32,9 @@ from cryptography.hazmat.primitives.asymmetric.utils import decode_dss_signature
 from cryptography.hazmat.primitives.serialization import pkcs7
 from cryptography.x509.oid import NameOID
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+import car_check  # noqa: E402
+
 API = "https://api.appstoreconnect.apple.com"
 IDENTITY_DIR = Path(os.environ.get("ASC_IDENTITY_DIR", Path.home() / ".config/omarchy-apple-dev/distribution"))
 TEST_IDENTITY_DIR = Path.home() / ".config/omarchy-apple-dev/test-identity"
@@ -741,6 +744,10 @@ def _check_assets(check, app, info, ipad):
     car = app / "Assets.car"
     sizes = {(w, h) for w, h, _ in car_renditions(car)} if car.exists() else set()
     check(car.exists(), f"Assets.car present ({len(sizes)} rendition sizes)")
+    for car_file in sorted(app.rglob("Assets.car")):
+        problems = car_check.check_car(car_file.read_bytes())
+        check(not problems, f"{car_file.relative_to(app)} passes the structural check"
+              + (": " + "; ".join(problems) if problems else ""))
     # actool 27.0 stores only the 1024 icon for a single-size AppIcon (the form App Store
     # processing accepted, FINDINGS.md 35); a multi-size set must then be complete.
     needed = {(1024, 1024): "App Store 1024"}
@@ -964,6 +971,11 @@ def validate(ipa):
 
 def upload(ipa):
     ipa = Path(ipa)
+    broken = {name: problems for name, problems in car_check.check_ipa(ipa).items() if problems}
+    if broken:
+        for name, problems in broken.items():
+            print(f"FAIL {name}: " + "; ".join(problems), file=sys.stderr)
+        die(f"{len(broken)} Assets.car file(s) in {ipa.name} fail the structural check; nothing was sent to App Store Connect")
     with zipfile.ZipFile(ipa) as z:
         info_name = next(n for n in z.namelist() if n.count("/") == 2 and n.endswith(".app/Info.plist"))
         info = plistlib.loads(z.read(info_name))

@@ -1,5 +1,13 @@
 # Changelog
 
+## Unreleased
+
+### Offline Assets.car check before any upload
+
+- `tools/car_check.py` checks every `Assets.car` in an `.ipa`: the app, nested `*.bundle` directories, extensions and frameworks. It reads the BOM structure, compares each BITMAPKEYS descriptor with the value Apple derives from the asset's renditions, and compares the TVL row stride with the decoded size of each pixel chunk. It uses only the Python standard library.
+- `tools/asc.py upload` runs the check first and stops before any App Store Connect call when a car fails. A direct `asc.py upload` is covered, not only `ship.sh`. `asc.py validate` reports each car as one check.
+- The check is not Apple's validator. It matched `assetutil --validate-file` on 54 of 55 retained IceCubes cars, and it flags 16 cars that `assetutil` accepted: those cars hold a second packed atlas whose rows do not match its stride. See `tests/car/README.md`.
+
 ## v0.4.0
 
 ### Signing with requested capabilities

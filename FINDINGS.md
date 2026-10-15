@@ -1716,3 +1716,29 @@ Two more notes for a Rust user on Linux:
   `CFLAGS_aarch64_apple_ios="--target=arm64-apple-ios17.0 -isysroot $SDK"`.
   `$SDK` comes from `swift sdk configure --show-configuration darwin
   arm64-apple-ios`.
+
+## Assets.car files that Apple's assetutil rejects, 2026-10-14
+
+Apple Developer Support case 102994382823 names an `Assets.car` of the IceCubes app
+(App 6819399771) as corrupted. The failed upload is not retained, so the case cannot be matched to
+a build. The retained AssetKit cars show three defects that Apple's own validator reports on a car
+that `assetutil --info` reads without error. `assetutil --validate-file` on a Mac is the oracle
+here. It is used to judge cars. No car it wrote is shipped.
+
+1. BITMAPKEYS. Each variable field of the 52-byte descriptor is the OR of `1 << token` over the
+   asset's renditions, for one KEYFORMAT attribute. Xcode 27.0 actool writes exactly that for all
+   147 rows of the IceCubes root catalog. The old writer used a per-kind template, so a symbol keyed
+   at glyph sizes 1 and 2 got 4 where Apple writes 6, and an asset with a HEIF rendition at
+   deployment target 2 got 1 where Apple writes 5. Result: `invalid bitmapindex`.
+2. Symbol templates saved by an editor. Path bounds ignored relative commands, so the rocket's
+   sprites were 13 times too large. The Ultralight, Regular and Black layers shared one key.
+3. The TVL 1007 stride was rounded up to 16 bytes over unpadded rows. Apple's decoder then reports
+   `early EOF ... at row N` and `Image data corrupted` for the packed symbol atlases. The same car
+   with the stride patched to the exact value validates.
+
+Apple accepted many builds whose cars fail `assetutil`: 43 of the retained car entries in COMPLETE
+builds. So these defects are real against actool and `assetutil`, and they may not be what App Store
+processing rejects. `tools/car_check.py` now enforces the Apple-visible rules before upload. The
+passing control is the car Xcode's actool writes from the same catalog, not an Apple-accepted
+upload. Detail and every command are in `receipts/2026-10-14-icecubes-assets-car.md`.
+
