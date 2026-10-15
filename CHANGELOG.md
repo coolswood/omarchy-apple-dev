@@ -6,7 +6,7 @@
 
 - `tools/car_check.py` checks every `Assets.car` in an `.ipa`: the app, nested `*.bundle` directories, extensions and frameworks. It refuses a car with no renditions. It reads the BOM structure, compares each BITMAPKEYS descriptor with the value Apple derives from the asset's renditions, and compares the TVL row stride with the decoded size of each pixel chunk. It uses only the Python standard library.
 - `tools/asc.py upload` runs the check first and stops before any App Store Connect call when a car fails. A direct `asc.py upload` is covered, not only `ship.sh`. `asc.py validate` reports each car as one check.
-- The check is not Apple's validator. It matched `assetutil --validate-file` on 55 of 55 retained IceCubes cars, and it flags 16 cars that `assetutil` accepted: those cars hold a second packed atlas whose rows do not match its stride. See `tests/car/README.md`.
+- The check is not Apple's validator. It matched `assetutil --validate-file` on 55 of 55 retained IceCubes cars, and it flags 17 cars that `assetutil` accepted after `-U`: 16 hold a packed atlas whose rows do not match its stride, and 1 is the empty car. See `tests/car/README.md`.
 
 ## v0.4.0
 

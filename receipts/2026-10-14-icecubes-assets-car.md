@@ -32,7 +32,8 @@ They are not shown to cause any App Store processing failure, or the support cas
   `asc.py validate` reports one check per car.
 - On the 55 retained original cars the check agrees with assetutil on 55 of 55.
   It flags 16 more cars that assetutil accepted after `-U`.
-  Each holds a second packed atlas whose rows do not match its stride.
+  Each holds a packed atlas whose rows do not match its stride.
+  It also flags the empty car after `-U`, which assetutil accepted.
 
 ## Controls
 
