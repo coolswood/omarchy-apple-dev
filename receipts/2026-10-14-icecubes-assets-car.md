@@ -58,5 +58,9 @@ The Linux-built cars of the same catalogs also give rc 0.
   Nothing was submitted for review.
 - A rebuild with the final actool gave four catalogs that are byte-identical to the uploaded ones.
   That actool has sha256 `f0785e50add04ec547ec424dc7d0279231154f7c9aa773d07a10fbbd5a5beebe` (AssetKit `f465edb3`). It was not uploaded.
+- AssetKit#1 merged as merge commit `09875ccce71e15244aa4910546e1f6afb6ef71d9`. Its tree equals the tree of `f465edb3`.
+  `tools/darwin-tools` now pins that commit.
+  An actool built from the pin (sha256 `e97122490bd8737a4bf8c0fff32007f6d88ddb606d2ece6bf3be3af821a47c2c`) compiles the IceCubes root catalog to a car that is byte-identical to the car of the local-path build.
+  The binary hash differs because of build paths.
 
 Cars, hashes, scripts and raw Apple output are in `artifacts/w7C/20261014-icecubes-assets-car/`, with SHA256SUMS.

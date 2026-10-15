@@ -10,9 +10,11 @@ let package = Package(
         // (FINDINGS.md 24, 27), per-size icon renditions (26), actool's BOM layout and
         // single-size icon form (37), the Liquid Glass pre-render of Icon Composer icons, HEIC images,
         // alternate app icons, gray and opacity encoding, Display P3 wide-gamut renditions, and actool's
-        // BITMAPKEYS descriptors. The macosx platform compiles with macOS 26's 13-attribute
+        // BITMAPKEYS descriptors as value masks, the exact TVL row stride, and symbol templates with relative
+        // paths, arcs and weight layers (FINDINGS.md, "Assets.car files that Apple's assetutil rejects"). The
+        // macosx platform compiles with macOS 26's 13-attribute
         // rendition-key schema so AppKit resolves symbols and images (60).
-        .package(url: "https://github.com/joshuaswarren/AssetKit", revision: "705ce2f2b797835cf4bac65e0dff1e9ca37ba0bf"),
+        .package(url: "https://github.com/joshuaswarren/AssetKit", revision: "09875ccce71e15244aa4910546e1f6afb6ef71d9"),
         .package(url: "https://github.com/tayloraswift/swift-png", from: "4.5.0"),
     ],
     targets: [
