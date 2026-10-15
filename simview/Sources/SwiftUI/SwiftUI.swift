@@ -773,6 +773,8 @@ enum Sim {
       return kids.lazy.compactMap(firstTitle).first
     case .vstack(_, _, let kids):
       return kids.lazy.compactMap(firstTitle).first
+    case .hstack(_, let kids):
+      return kids.lazy.compactMap(firstTitle).first
     case .padded(_, let child):
       return firstTitle(child)
     default:
