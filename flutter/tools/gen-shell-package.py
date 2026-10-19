@@ -95,6 +95,17 @@ for name, pkg, product in plugins:
         shutil.copytree(pkg, dest, symlinks=False, ignore=shutil.ignore_patterns(".build", ".swiftpm"))
     except (shutil.Error, OSError) as error:
         sys.exit(f"{name}: cannot copy {pkg} into the shell package: {error}")
+    # Drop the FlutterFramework dependency from the copied manifest. On a Mac
+    # that product vends the real Flutter.xcframework; here Flutter comes from
+    # the framework search path and -framework flags the build passes to the
+    # whole swift build, and keeping the placeholder static product in the
+    # graph makes SwiftBuild abort with "linked as a static library by ...
+    # and ...": two consumers, one of them a dynamic plugin product. No
+    # plugin source imports the FlutterFramework module, only manifests
+    # reference it.
+    manifest_path = os.path.join(dest, "Package.swift")
+    manifest_lines = [l for l in open(manifest_path).read().split("\n") if "FlutterFramework" not in l]
+    open(manifest_path, "w").write("\n".join(manifest_lines))
     local.append((name, dest, product))
 plugins = local
 
