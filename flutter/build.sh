@@ -76,9 +76,23 @@ for d in "$@"; do defines+="${defines:+,}$(printf '%s' "$d" | base64 -w0)"; done
 
 echo "== 2. Native: Runner and plugins as one Swift package"
 python3 "$here/tools/gen-shell-package.py" "$app" "$shell_pkg" "$MIN_IOS"
+# Native-asset frameworks (flutter_soloud, objective_c, sqlite3, ...) are
+# dlopen'ed by the Dart runtime only on demand, but plugins whose SwiftPM
+# package compiles with -undefined dynamic_lookup against the asset's exports
+# need them in the initial link closure: give Runner an LC_LOAD_DYLIB for each
+# (what Xcode's native-assets phase does on a Mac).
+natargs=()
+if [ -d "$asm/native_assets" ]; then
+  natargs+=(-Xlinker -F -Xlinker "$asm/native_assets")
+  for f in "$asm"/native_assets/*.framework; do
+    [ -d "$f" ] || continue
+    natargs+=(-Xlinker -framework -Xlinker "$(basename "${f%.framework}")")
+  done
+fi
 (cd "$shell_pkg" && swift build --configuration release --build-system swiftbuild \
   --triple "arm64-apple-ios$MIN_IOS" --toolset "$sdkb/toolset-swb.json" --product Runner \
   -Xswiftc "-F$asm" -Xcc "-F$asm" -Xlinker "-F$asm" -Xlinker -framework -Xlinker Flutter \
+  "${natargs[@]+"${natargs[@]}"}" \
   -Xlinker -rpath -Xlinker @executable_path/Frameworks \
   -Xlinker -platform_version -Xlinker ios -Xlinker "$MIN_IOS" -Xlinker "$sdk_version") \
   >"$out/shell-build.log" 2>&1 || { grep -E 'error' "$out/shell-build.log" | head -n 40 >&2; exit 1; }
@@ -103,6 +117,32 @@ echo "== 4. Assemble"
 cp "$products/Runner" "$bundle/Runner"
 strip -x "$bundle/Runner"
 for b in "$products"/*.bundle; do [ ! -d "$b" ] || cp -R "$b" "$bundle/"; done
+# Dynamic SwiftPM products: a plugin may vend a .dylib product (flutter_soloud
+# is type: .dynamic) or a dynamic framework (ScreenPreventerKit); Runner's load
+# commands reference them under @rpath, which resolves to Frameworks. SwiftBuild
+# also stages unreferenced binaryTargets into products (Sentry.framework here,
+# which rcodesign cannot re-sign), so embed only what is actually loaded. Two
+# passes cover a dylib that itself loads a product framework.
+find "$products" -maxdepth 1 -name '*.dylib' -exec cp {} "$bundle/Frameworks/" \;
+for pass in 1 2; do
+  {
+    llvm-otool -l "$bundle/Runner" "$bundle"/Frameworks/*.dylib 2>/dev/null || true
+    for fw in "$bundle"/Frameworks/*.framework; do
+      bin=$(basename "$fw")
+      [ -f "$fw/$bin" ] && llvm-otool -l "$fw/$bin" 2>/dev/null || true
+    done
+  } | sed -n 's/.*name @rpath\/\([^ ]*\).*/\1/p' | sort -u |
+    while read -r name; do
+      case $name in
+        *.framework/*) rel=${name%%.framework/*}.framework ;;
+        *) rel=$name ;;
+      esac
+      if [ -e "$products/$rel" ] && [ ! -e "$bundle/Frameworks/$rel" ]; then
+        echo "embedding $rel"
+        cp -R "$products/$rel" "$bundle/Frameworks/"
+      fi
+    done
+done
 cp -R "$asm/App.framework" "$asm/Flutter.framework" "$bundle/Frameworks/"
 for f in "$asm"/native_assets/*.framework; do [ ! -d "$f" ] || cp -R "$f" "$bundle/Frameworks/"; done
 cp "$app/ios/Flutter/AppFrameworkInfo.plist" "$bundle/"
