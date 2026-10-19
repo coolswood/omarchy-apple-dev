@@ -110,15 +110,27 @@ for name, pkg, product in plugins:
     kept_lines = []
     for line in open(manifest_path).read().split("\n"):
         if "FlutterFramework" in line:
-            # Remove the dependency itself: a whole .package(...) / .product(...)
-            # call expression (wherever it sits on the line), then any bare
-            # "FlutterFramework" array element; a .target line survives with an
-            # empty array. Anything left fails closed, never a broken manifest.
+            # Remove only the dependency itself, never a whole .target:
+            # 1) a whole single-line .package(...) / .product(...) call,
+            # 2) an inline array element (bracket/comma delimited on the line),
+            # 3) a standalone element line, but only when the previous
+            #    non-empty line shows array context (ends with '[' or ',');
+            #    a split call like '.product(name:\n  "FlutterFramework",'
+            #    has 'name:' above and must fail closed, not silently empty.
+            prev = next((k.strip() for k in reversed(kept_lines) if k.strip()), "")
             line = re.sub(r'\.(package|product)\([^()]*"FlutterFramework"[^()]*\)\s*,?\s*', "", line)
-            line = re.sub(r'"FlutterFramework"\s*,?\s*', "", line)
+            line = re.sub(r'([\[,]\s*)"FlutterFramework"\s*,?(?=\s*[\],])', r"\1", line)
+            standalone = re.match(r'\s*"FlutterFramework"\s*,?\s*$', line)
+            if standalone and (prev.endswith("[") or prev.endswith(",")):
+                line = ""
             if "FlutterFramework" in line:
                 sys.exit(f"{name}: unsupported FlutterFramework reference in {manifest_path}: {line.strip()}")
-        kept_lines.append(line)
+            if line.strip():
+                kept_lines.append(line)
+            elif standalone:
+                kept_lines.append(line)
+        else:
+            kept_lines.append(line)
     open(manifest_path, "w").write("\n".join(kept_lines))
     local.append((name, dest, product))
 plugins = local
