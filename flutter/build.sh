@@ -121,14 +121,19 @@ for b in "$products"/*.bundle; do [ ! -d "$b" ] || cp -R "$b" "$bundle/"; done
 # is type: .dynamic) or a dynamic framework (ScreenPreventerKit); Runner's load
 # commands reference them under @rpath, which resolves to Frameworks. SwiftBuild
 # also stages unreferenced binaryTargets into products (Sentry.framework here,
-# which rcodesign cannot re-sign), so embed only what is actually loaded. Two
-# passes cover a dylib that itself loads a product framework.
+# which rcodesign cannot re-sign), so embed only what is actually loaded. The
+# scan repeats until no new product is embedded, so a chain of any depth
+# (Runner -> F0 -> F1 -> ...) closes; App/Flutter/native-asset frameworks are
+# copied first so their binaries are scanned too.
 find "$products" -maxdepth 1 -name '*.dylib' -exec cp {} "$bundle/Frameworks/" \;
-for pass in 1 2; do
+cp -R "$asm/App.framework" "$asm/Flutter.framework" "$bundle/Frameworks/"
+for f in "$asm"/native_assets/*.framework; do [ ! -d "$f" ] || cp -R "$f" "$bundle/Frameworks/"; done
+for _ in $(seq 1 64); do  # ponytail: fixed 64-iteration cap; products are finite so the loop exits on its own first
+  before=$(find "$bundle/Frameworks" -maxdepth 1 | wc -l)
   {
     llvm-otool -l "$bundle/Runner" "$bundle"/Frameworks/*.dylib 2>/dev/null || true
     for fw in "$bundle"/Frameworks/*.framework; do
-      bin=$(basename "$fw")
+      bin=$(basename "${fw%.framework}")
       [ -f "$fw/$bin" ] && llvm-otool -l "$fw/$bin" 2>/dev/null || true
     done
   } | sed -n 's/.*name @rpath\/\([^ ]*\).*/\1/p' | sort -u |
@@ -142,9 +147,9 @@ for pass in 1 2; do
         cp -R "$products/$rel" "$bundle/Frameworks/"
       fi
     done
+  after=$(find "$bundle/Frameworks" -maxdepth 1 | wc -l)
+  [ "$after" -gt "$before" ] || break
 done
-cp -R "$asm/App.framework" "$asm/Flutter.framework" "$bundle/Frameworks/"
-for f in "$asm"/native_assets/*.framework; do [ ! -d "$f" ] || cp -R "$f" "$bundle/Frameworks/"; done
 cp "$app/ios/Flutter/AppFrameworkInfo.plist" "$bundle/"
 printf 'APPL????' >"$bundle/PkgInfo"
 rm -f "$out/Runner.ipa"
