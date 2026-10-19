@@ -293,6 +293,8 @@ def flatten_png_alpha(path):
     rows, prev = [], bytearray(stride)
     for y in range(h):
         ft = buf[y * (stride + 1)]
+        if ft > 4:  # invalid per the PNG spec; refuse rather than treat as None
+            return False
         line = bytearray(buf[y * (stride + 1) + 1:(y + 1) * (stride + 1)])
         if ft == 1:  # Sub
             for i in range(bpp, stride):
