@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""App Store steps for ship.sh: stamp, frameworks, identity, test-identity, validate, upload.
+"""App Store steps for ship.sh: stamp, frameworks, identity, test-identity, validate, upload, publish.
 
 Runs with the pymobiledevice3 venv's python, which already has `cryptography`.
 API key: ASC_KEY_ID, ASC_ISSUER_ID, and ASC_KEY_PATH (default
@@ -1119,10 +1119,214 @@ def upload(ipa):
         sys.exit(1)
 
 
+# -- publish (whatsnew + build attach + review submission) --------------------
+
+# Notes files use Play locale codes; map the store's names onto them
+# (the store says "he"/"zh-Hans" where Play says "iw…"/"zh-CN").
+NOTES_ALIASES = {"he": "iw", "id": "in", "zh-Hans": "zh-CN", "zh-Hant": "zh-TW"}
+
+# App Review rejects "What's New" containing emoji; the Play-style notes carry
+# some, so they are stripped before the upload (Play keeps the original).
+EMOJI_RE = re.compile(
+    "[\U0001F000-\U0001FAFF"   # symbol and emoji blocks (🎁, flags, skin tones)
+    "\u2600-\u27BF"            # misc symbols and dingbats (✨, ❤)
+    "\u2B00-\u2BFF"            # stars (⭐)
+    "\uFE0F\u200D\u20E3]"      # variation selector, ZWJ, keycap joiner
+)
+
+
+def strip_emoji(text, locale):
+    """Emoji-free text plus the sorted set of removed characters (the caller
+    reports them)."""
+    removed = sorted({c for c in text if EMOJI_RE.match(c)})
+    text = EMOJI_RE.sub("", text)
+    text = re.sub(r"[ \t]{2,}", " ", text)
+    text = re.sub(r" +\n", "\n", text).strip()
+    if not text:
+        die(f"{locale}: release notes are empty once emoji are stripped")
+    return text, removed
+
+
+def read_info(target):
+    """Info.plist of a packaged app: accepts the .ipa or the staged .app dir."""
+    target = Path(target)
+    if target.suffix == ".ipa":
+        with zipfile.ZipFile(target) as z:
+            name = next(n for n in z.namelist() if n.count("/") == 2 and n.endswith(".app/Info.plist"))
+            return plistlib.loads(z.read(name))
+    return plistlib.load((target / "Info.plist").open("rb"))
+
+
+def note_for(store_locale, notes):
+    """Store locale → (notes key, text): exact match, then the Play-style
+    alias ("he" → "iw"), then base language ("nl-NL" → "nl"), then en-US,
+    then ru. Returns None when nothing fits."""
+    base = store_locale.split("-")[0]
+    for candidate in (store_locale, NOTES_ALIASES.get(store_locale), base,
+                      NOTES_ALIASES.get(base), "en-US", "en", "ru", "ru-RU"):
+        if candidate in notes:
+            return candidate, notes[candidate]
+    return None
+
+
+def editable_version(app_id, version_string):
+    """The App Store version that can still be changed, or None. Dies when a
+    version with this string exists but is frozen (IN_REVIEW and friends) —
+    creating a duplicate would only end in an opaque 409."""
+    editable_states = ("PREPARE_FOR_SUBMISSION", "READY_FOR_REVIEW", "WAITING_FOR_REVIEW", "REJECTED",
+                       "METADATA_REJECTED", "DEVELOPER_REJECTED", "INVALID_BINARY")
+    data = call("GET", f"/v1/apps/{app_id}/appStoreVersions"
+                f"?filter[platform]=IOS&filter[versionString]={version_string}&limit=50")["data"]
+    editable = [v for v in data if v["attributes"]["appStoreState"] in editable_states]
+    if editable:
+        # PREPARE_FOR_SUBMISSION wins over already-submitted states.
+        editable.sort(key=lambda v: v["attributes"]["appStoreState"] != "PREPARE_FOR_SUBMISSION")
+        return editable[0]
+    if data:
+        got = sorted({v["attributes"]["appStoreState"] for v in data})
+        die(f"version {version_string} already exists but is not editable (state: {', '.join(got)}); "
+            "it is in Apple's hands — ship the next version string instead")
+    return None
+
+
+def publish(target, notes_path):
+    """Make the uploaded build a submittable release: find or create the App
+    Store version, attach the build, fill "What's New" in every store locale
+    from a Play-style release_notes.json, submit for review.
+    Same bundle info as upload(): CFBundleIdentifier / ShortVersionString / Version."""
+    target = Path(target)
+    info = read_info(target)
+    notes_path = Path(notes_path)
+    try:
+        entries = json.loads(notes_path.read_text())
+        notes = {e["language"]: e["text"] for e in entries}
+    except (OSError, ValueError, TypeError, KeyError) as e:
+        die(f"{notes_path}: not a usable release_notes.json "
+            f"(a list of {{language, text}} objects is expected): {e}")
+    identifier = info["CFBundleIdentifier"]
+    version_string = info["CFBundleShortVersionString"]
+    build_number = str(info["CFBundleVersion"])
+
+    print(f"== publish {identifier} {version_string} ({build_number}) ==")
+    apps = call("GET", f"/v1/apps?filter[bundleId]={identifier}")["data"]
+    if not apps:
+        die(f"no App Store Connect app for {identifier}")
+    app_id = apps[0]["id"]
+
+    version = editable_version(app_id, version_string)
+    if version is None:
+        print(f"no editable version {version_string}; creating one")
+        version = call("POST", "/v1/appStoreVersions", {"data": {
+            "type": "appStoreVersions",
+            "attributes": {"platform": "IOS", "versionString": version_string, "releaseType": "MANUAL"},
+            "relationships": {"app": rel("apps", app_id)},
+        }})["data"]
+    vid = version["id"]
+    state = version["attributes"]["appStoreState"]
+    print(f"version {version_string}: {vid} [{state}]")
+    if state == "WAITING_FOR_REVIEW":
+        # Apple locks the metadata once submitted; nothing left to change here.
+        print("version is already waiting for review; leaving whatsNew untouched")
+        return
+
+    attached = call("GET", f"/v1/appStoreVersions/{vid}/build")["data"]
+    if attached:
+        got = str(attached["attributes"]["version"])
+        check = "ok" if got == build_number else f"MISMATCH (version wants {build_number})"
+        print(f"build {attached['id']} #{got} already attached: {check}")
+        if got != build_number:
+            die(f"attached build #{got} does not match the bundle's {build_number}")
+    else:
+        builds = call("GET", f"/v1/builds?filter[app]={app_id}&filter[version]={build_number}&limit=10")["data"]
+        ready = [b for b in builds if b["attributes"]["processingState"] == "VALID" and not b["attributes"].get("expired")]
+        if not ready:
+            states = {b["attributes"]["processingState"] for b in builds}
+            die(f"build #{build_number} not attachable (states: {states or 'not found'}); "
+                "wait until TestFlight shows it VALID")
+        bid = ready[0]["id"]
+        call("PATCH", f"/v1/appStoreVersions/{vid}", {"data": {
+            "type": "appStoreVersions", "id": vid,
+            "relationships": {"build": rel("builds", bid)},
+        }})
+        print(f"build {bid} #{build_number} attached")
+
+    localizations = call("GET", f"/v1/appStoreVersions/{vid}/appStoreVersionLocalizations?limit=200")["data"]
+    used, missing = set(), []
+    for loc in localizations:
+        locale = loc["attributes"]["locale"]
+        found = note_for(locale, notes)
+        if found is None:
+            missing.append(locale)
+            continue
+        key, text = found
+        used.add(key)
+        clean, removed = strip_emoji(text, locale)
+        if removed:
+            print(f"  {locale}: stripped {len(removed)} symbol kind(s): {' '.join(removed)}")
+        if loc["attributes"].get("whatsNew") == clean:
+            print(f"  {locale}: whatsNew already up to date")
+            continue
+        call("PATCH", f"/v1/appStoreVersionLocalizations/{loc['id']}", {"data": {
+            "type": "appStoreVersionLocalizations", "id": loc["id"],
+            "attributes": {"whatsNew": clean},
+        }})
+        print(f"  {locale}: whatsNew set ({len(clean)} chars)")
+    unused = sorted(set(notes) - used)
+    if unused:
+        print(f"  notes locales with no store localization: {', '.join(unused)}")
+    if missing:
+        print(f"  store locales with no notes text, left empty: {', '.join(missing)}")
+
+    # Review submissions: reuse an open one, else create; the version goes in
+    # as a reviewSubmissionItem (the API does not auto-populate items).
+    submissions = call("GET", f"/v1/reviewSubmissions?filter[app]={app_id}&filter[platform]=IOS&limit=50")["data"]
+    open_submissions = [s for s in submissions
+                        if s["attributes"]["state"] not in ("COMPLETE", "CANCELED")]
+    if open_submissions:
+        sid = open_submissions[0]["id"]
+    else:
+        sid = call("POST", "/v1/reviewSubmissions", {"data": {
+            "type": "reviewSubmissions",
+            "attributes": {"platform": "IOS"},
+            "relationships": {"app": rel("apps", app_id)},
+        }})["data"]["id"]
+    payload = call("GET", f"/v1/reviewSubmissions/{sid}/items?include=appStoreVersion&limit=100")
+    included = {i["id"]: i["attributes"].get("versionString", i["id"]) for i in payload.get("included", [])}
+    mine, others = [], []
+    for item in payload["data"]:
+        version_rel = ((item.get("relationships", {}).get("appStoreVersion") or {}).get("data") or {}).get("id")
+        (mine if version_rel == vid else others).append(included.get(version_rel, version_rel or item["id"]))
+    if not mine:
+        call("POST", "/v1/reviewSubmissionItems", {"data": {
+            "type": "reviewSubmissionItems",
+            "attributes": {},
+            "relationships": {
+                "reviewSubmission": rel("reviewSubmissions", sid),
+                "appStoreVersion": rel("appStoreVersions", vid),
+            },
+        }})
+        print(f"version added to review submission {sid}")
+    if others:
+        print(f"  submission {sid} also carries items: {', '.join(others)}")
+    call("PATCH", f"/v1/reviewSubmissions/{sid}", {"data": {
+        "type": "reviewSubmissions", "id": sid,
+        "attributes": {"submitted": True},
+    }})
+    # The state change lags a little behind the PATCH; poll briefly so the
+    # final line does not read like a failure.
+    state = version["attributes"]["appStoreState"]
+    for _ in range(6):
+        time.sleep(5)
+        state = call("GET", f"/v1/appStoreVersions/{vid}")["data"]["attributes"]["appStoreState"]
+        if state not in ("READY_FOR_REVIEW", "PREPARE_FOR_SUBMISSION"):
+            break
+    print(f"submitted (submission {sid}); version {version_string} state: {state}")
+
+
 if __name__ == "__main__":
     commands = {"stamp": stamp, "frameworks": frameworks, "identity": identity, "test-identity": test_identity,
-                "validate": validate, "upload": upload}
+                "validate": validate, "upload": upload, "publish": publish}
     if len(sys.argv) < 2 or sys.argv[1] not in commands:
         die("usage: asc.py stamp APP BUILD | frameworks APP | identity APP OUTDIR | test-identity APP OUTDIR"
-            " | validate IPA | upload IPA")
+            " | validate IPA | upload IPA | publish IPA|APP NOTES_JSON")
     commands[sys.argv[1]](*sys.argv[2:])

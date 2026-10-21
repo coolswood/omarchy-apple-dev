@@ -10,7 +10,10 @@
 # Env: ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_PATH (required; same as ship.sh),
 # ASC_ENTITLEMENTS_PATH and APP_GROUPS (optional, passed to asc.py identity —
 # the app's .entitlements file and its app groups, e.g. "group.example"),
-# SHIP_SKIP_UPLOAD=1 to stop after validation.
+# SHIP_SKIP_UPLOAD=1 to stop after validation, RELEASE_NOTES_JSON pointing at a
+# Play-style release_notes.json: after the upload asc.py publish fills "What's
+# New" in every store locale, attaches the build to the app version (creating
+# the version if needed) and submits it for App Review.
 set -euo pipefail
 
 app=$(readlink -f "${1:?usage: ship.sh <flutter app dir> <build number>}")
@@ -71,6 +74,15 @@ echo "== 6. Offline App Store validation =="
 if [ -z "${SHIP_SKIP_UPLOAD:-}" ]; then
   echo "== 7. Upload to App Store Connect =="
   "$PY" "$ASC" upload "$ipa"
+  if [ -n "${RELEASE_NOTES_JSON:-}" ]; then
+    echo "== 8. Publish: whatsnew + build attach + review submission =="
+    # If the build is still processing (publish dies on it), rerun
+    #   asc.py publish <ipa> <notes.json>
+    # once TestFlight shows it VALID — not this script (it would re-upload).
+    "$PY" "$ASC" publish "$ipa" "$RELEASE_NOTES_JSON"
+  else
+    echo "RELEASE_NOTES_JSON not set: skipping whatsnew / review submission"
+  fi
 else
   echo "SHIP_SKIP_UPLOAD set: stopping after validation"
 fi
