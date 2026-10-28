@@ -104,17 +104,32 @@ def storyboards(ios_dir):
             if path.lower().endswith(".storyboard")]
 
 
+def find_target(gen, target_name):
+    """A native target by name. Unlike Generator.pick_target, which only looks
+    at application targets, this also finds extension and test targets, whose
+    settings gen-extensions.py reads."""
+    for oid, o in gen.app_targets():
+        if o.get("name") == target_name:
+            return oid, o
+    for oid, o in gen.objs.items():
+        if o.get("isa") == "PBXNativeTarget" and o.get("name") == target_name:
+            return oid, o
+    names = sorted({o.get("name", "?") for o in gen.objs.values()
+                    if o.get("isa") == "PBXNativeTarget"})
+    raise SystemExit(f"error: no target named {target_name!r} (have: {', '.join(names) or 'none'})")
+
+
 class Settings:
-    def __init__(self, ios_dir, configuration):
-        gen = xcodeproj2xtool.Generator(os.path.join(ios_dir, "Runner.xcodeproj"), "Runner")
-        _oid, target = gen.pick_target()
+    def __init__(self, ios_dir, configuration, target_name="Runner"):
+        gen = xcodeproj2xtool.Generator(os.path.join(ios_dir, "Runner.xcodeproj"))
+        _oid, target = find_target(gen, target_name)
         names = configurations(gen, target)
         found = [n for n in names if n.lower() == configuration.lower()]
         if not found:
-            raise SystemExit(f"error: the Runner target has no {configuration!r} build configuration "
+            raise SystemExit(f"error: the {target_name} target has no {configuration!r} build configuration "
                              f"(it has: {', '.join(names) or 'none'})")
         self.configuration = found[0]
-        self.builtin = {"CONFIGURATION": self.configuration, "TARGET_NAME": "Runner",
+        self.builtin = {"CONFIGURATION": self.configuration, "TARGET_NAME": target_name,
                         "PROJECT_DIR": os.path.abspath(ios_dir), "SRCROOT": os.path.abspath(ios_dir)}
         self.layers = []  # lowest precedence first
         for owner in (gen.project, target):

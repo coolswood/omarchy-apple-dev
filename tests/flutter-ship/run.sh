@@ -31,6 +31,11 @@
 #     before any step, naming it
 #   13 none:      Release of the stock template (no CODE_SIGN_ENTITLEMENTS), or no
 #     recorded configuration -> no ASC_ENTITLEMENTS_PATH, as before
+#   Extensions (PlugIns/*.appex; the asc stub writes <name>-entitlements.plist for each, as asc.py identity does):
+#   14 appex:     one PlugIns/Share.appex -> rcodesign runs on the frameworks, then on the
+#     appex with Share-entitlements.plist, then on the app with entitlements.plist
+#   15 no ent:    the appex's entitlements file is missing -> exit 1 naming it, and rcodesign
+#     signs neither the appex nor the app
 # Mutants (each must fail its row; checked by hand when the test was written):
 #   M1  sign the app before the frameworks -> row 1 (order)
 #   M2  sign $built instead of the staged copy -> row 1 (built bundle changed)
@@ -40,6 +45,7 @@
 #   M6  ignore a set ASC_ENTITLEMENTS_PATH -> row 10
 #   M7  leave the path relative to ios/ -> row 9
 #   M8  drop the file check -> row 12
+#   M9  drop the appex signing loop -> rows 14 and 15
 # usage: run.sh [path-to-flutter/ship.sh]   default: ../../flutter/ship.sh
 set -uo pipefail
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
@@ -70,6 +76,10 @@ import plistlib, sys
 plistlib.dump({"com.apple.developer.team-identifier": sys.argv[2]}, open(sys.argv[1], "wb"))
 PY
         : >"$3/key.pem"; : >"$3/cert.der"
+        for appex in "$2"/PlugIns/*.appex; do
+          [ -d "$appex" ] && [ -z "${STUB_NO_APPEX_ENT:-}" ] || continue
+          cp "$3/entitlements.plist" "$3/$(basename "$appex" .appex)-entitlements.plist"
+        done
         cp "$3/entitlements.plist" "$2/embedded.mobileprovision" ;;
       validate)
         unzip -l "$2" | grep -q 'Payload/Runner.app/_CodeSignature/' || { echo "validate stub: unsigned" >&2; exit 1; } ;;
@@ -226,5 +236,23 @@ mkapp "$tmp/r13b"
 if drive "$tmp/r13.log" -- "$tmp/r13" >/dev/null 2>&1 && drive "$tmp/r13b.log" -- "$tmp/r13b" >/dev/null 2>&1 &&
    ! grep -q "ship-signing ent=" "$tmp/r13.log" "$tmp/r13b.log"; then ok "row 13 no entitlements as before"
 else bad "row 13 no entitlements"; sed 's/^/  /' "$tmp/r13.log" "$tmp/r13b.log"; fi
+
+# Row 14
+mkapp "$tmp/r14"
+mkdir -p "$tmp/r14/build/ios-linux/Payload/Runner.app/PlugIns/Share.appex"
+if drive "$tmp/r14.log" -- "$tmp/r14" >"$tmp/r14.out" 2>&1 &&
+   [ "$(grep '^rcodesign' "$tmp/r14.log")" = "rcodesign App.framework
+rcodesign Flutter.framework
+rcodesign Share.appex ent=Share-entitlements.plist
+rcodesign Runner.app ent=entitlements.plist" ]; then ok "row 14 appex signed before the app with its own entitlements"; else
+  bad "row 14 appex signing"; sed 's/^/  /' "$tmp/r14.log" "$tmp/r14.out"; fi
+
+# Row 15
+mkapp "$tmp/r15"
+mkdir -p "$tmp/r15/build/ios-linux/Payload/Runner.app/PlugIns/Share.appex"
+if drive "$tmp/r15.log" STUB_NO_APPEX_ENT=1 -- "$tmp/r15" >"$tmp/r15.out" 2>&1; then bad "row 15 missing appex entitlements accepted"
+elif grep -q 'Share-entitlements.plist' "$tmp/r15.out" && ! grep -q 'rcodesign \(Share.appex\|Runner.app\)' "$tmp/r15.log"; then
+  ok "row 15 missing appex entitlements stops"
+else bad "row 15 message or steps"; sed 's/^/  /' "$tmp/r15.log" "$tmp/r15.out"; fi
 
 exit "$fail"

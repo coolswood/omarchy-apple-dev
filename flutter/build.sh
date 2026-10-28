@@ -159,6 +159,23 @@ fi
   >"$out/shell-build.log" 2>&1 || { grep -E 'error' "$out/shell-build.log" | head -n 40 >&2; exit 1; }
 products=$shell_pkg/.build/out/Products/Release-iphoneos
 
+echo "== 2b. Extensions: the app extensions the Runner embeds (widgets and friends)"
+ext_pkg=$out/extensions
+python3 "$here/tools/gen-extensions.py" "$app" "$ext_pkg" "$configuration"
+ext_plan=$(python3 -c 'import json,sys
+plan = json.load(open(sys.argv[1]))
+print(plan["platform"])
+print(" ".join(e["name"] for e in plan["extensions"]))' "$ext_pkg/plan.json")
+ext_min=${ext_plan%%$'\n'*}
+exts=${ext_plan#*$'\n'}
+if [ -n "$exts" ]; then
+  (cd "$ext_pkg" && swift build --configuration release --build-system swiftbuild \
+    --triple "arm64-apple-ios$ext_min" --toolset "$sdkb/toolset-swb.json" \
+    -Xlinker -platform_version -Xlinker ios -Xlinker "$ext_min" -Xlinker "$sdk_version") \
+    >"$out/extensions-build.log" 2>&1 || { grep -E 'error' "$out/extensions-build.log" | head -n 40 >&2; exit 1; }
+  ext_products=$ext_pkg/.build/out/Products/Release-iphoneos
+fi
+
 echo "== 3. Wrapper: icons, storyboards, Info.plist"
 "$tools/actool" "$app/ios/Runner/Assets.xcassets" --compile "$bundle" --platform iphoneos \
   "${icon_args[@]+"${icon_args[@]}"}" --minimum-deployment-target "$MIN_IOS" --target-device iphone --target-device ipad \
@@ -230,6 +247,56 @@ for _ in $(seq 1 64); do  # ponytail: fixed 64-iteration cap; products are finit
   after=$(find "$bundle/Frameworks" -maxdepth 1 | wc -l)
   [ "$after" -gt "$before" ] || break
 done
+# Each extension becomes PlugIns/<name>.appex: the executable build.sh built
+# above, the Info.plist gen-extensions.py wrote, the target's catalogs as
+# Assets.car, its string catalogs as X.lproj, and the rest of its resources,
+# as Xcode assembles an extension.
+if [ -n "$exts" ]; then
+  mkdir -p "$bundle/PlugIns"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    appex=$bundle/PlugIns/$name.appex
+    mkdir -p "$appex"
+    cp "$ext_products/$name" "$appex/$name"
+    strip -x "$appex/$name"
+    cp "$ext_pkg/$name-Info.plist" "$appex/Info.plist"
+    field() { # a plan.json list of one extension, one entry per line
+      python3 -c 'import json, sys
+e = next(x for x in json.load(open(sys.argv[1]))["extensions"] if x["name"] == sys.argv[2])
+if sys.argv[3] == "resources":
+    print("\n".join(f"{src}\t{dst}" for src, dst in e["resources"]))
+else:
+    print("\n".join(e[sys.argv[3]]))' "$ext_pkg/plan.json" "$name" "$1"
+    }
+    assets=$(field assets)
+    if [ -n "$assets" ]; then
+      mapfile -t asset_dirs <<<"$assets"
+      "$tools/actool" "${asset_dirs[@]}" --compile "$appex" --platform iphoneos \
+        --minimum-deployment-target "$ext_min" --target-device iphone --target-device ipad \
+        --output-partial-info-plist "$stage/$name-assets.plist" \
+        --output-format human-readable-text >>"$out/actool.log" 2>&1 ||
+        { tail -n 20 "$out/actool.log" >&2; exit 1; }
+      python3 -c 'import plistlib, sys
+p = sys.argv[1]
+d = plistlib.load(open(p, "rb"))
+d.update(plistlib.load(open(sys.argv[2], "rb")))
+plistlib.dump(d, open(p, "wb"), fmt=plistlib.FMT_BINARY)' "$appex/Info.plist" "$stage/$name-assets.plist"
+    fi
+    while IFS= read -r catalog; do
+      [ -n "$catalog" ] || continue
+      python3 "$here/../tools/xcstringstool" compile "$catalog" --output-dir "$appex" \
+        --serialization-format binary >>"$out/xcstringstool.log" 2>&1 ||
+        { tail -n 10 "$out/xcstringstool.log" >&2; exit 1; }
+    done <<<"$(field strings)"
+    while IFS=$'\t' read -r src dst; do
+      [ -n "$src" ] || continue
+      mkdir -p "$appex/$(dirname "$dst")"
+      cp -R "$src" "$appex/$dst"
+    done <<<"$(field resources)"
+    printf 'BNDL????' >"$appex/PkgInfo"
+  done < <(python3 -c 'import json, sys
+print("\n".join(e["name"] for e in json.load(open(sys.argv[1]))["extensions"]))' "$ext_pkg/plan.json")
+fi
 cp "$app/ios/Flutter/AppFrameworkInfo.plist" "$bundle/"
 printf 'APPL????' >"$bundle/PkgInfo"
 # STRIP_FRAMEWORKS names frameworks to leave out (without .framework, separated
@@ -282,6 +349,9 @@ for f in "$bundle"/Frameworks/*; do
     *.framework) add_dsym "$name" "$products/$name/${name%.framework}" ;;
     *.dylib) add_dsym "$name" "$products/$name" ;;
   esac
+done
+for name in ${exts:-}; do
+  add_dsym "$name.appex" "$ext_products/$name"
 done
 echo "dSYMs: $(find "$dsyms" -mindepth 1 -maxdepth 1 -name '*.dSYM' | wc -l) in $dsyms"
 if [ "${#dsym_missing[@]}" -gt 0 ]; then
