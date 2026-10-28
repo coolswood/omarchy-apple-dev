@@ -19,10 +19,15 @@
 #   7  SwiftPM dylib: dsymutil on products/libfoo.dylib -> libfoo.dylib.dSYM
 #   8  rebuild: a read-only dSYMs tree from the last build is replaced
 #   9  count: the summary line counts the dSYMs written
+#   10 extension: with exts=Widget, dsymutil on ext-products/Widget ->
+#      Widget.appex.dSYM; the summary counts it
+#   11 extension without a debug map: no dSYM left, a warning names Widget.appex,
+#      the step still succeeds
 # Mutants (each must fail its row; checked by hand when the test was written):
 #   M1  drop the DWARF-file check -> row 6
 #   M2  drop the products/<name>.dSYM candidate -> row 4
 #   M3  drop the chmod before rm -> row 8 (non-root only, as on CI)
+#   M4  drop the extension loop -> rows 10 and 11
 # usage: run.sh [path-to-flutter/build.sh]   default: ../../flutter/build.sh
 set -uo pipefail
 here=$(cd "$(dirname "$(readlink -f "$0")")" && pwd)
@@ -79,6 +84,7 @@ run_step() {
   : >"$r.log"
   PATH=$tmp/bin:$PATH STUB_LOG=$r.log out=$r/out asm=$r/asm products=$r/products \
     bundle=$r/out/Payload/Runner.app flutter_root=$r/flutter \
+    exts=${EXTS:-} ext_products=${EXT_PRODUCTS:-} \
     bash -c 'set -euo pipefail; source "$1"' _ "$step" >"$r.out" 2>&1
 }
 
@@ -113,5 +119,22 @@ chmod -R a-w "$r/out/dSYMs"
 chmod u+w "$r/out"
 if run_step "$r" && [ -d "$r/out/dSYMs/Runner.app.dSYM" ]; then ok "row 8 read-only rebuild"; else
   bad "row 8 read-only rebuild"; sed 's/^/  /' "$r.out"; fi
+
+r=$tmp/e; mktree "$r"
+mkdir -p "$r/ext-products"; echo debug >"$r/ext-products/Widget"
+if EXTS=Widget EXT_PRODUCTS=$r/ext-products run_step "$r"; then
+  d=$r/out/dSYMs
+  grep -qx "dsymutil $r/ext-products/Widget -o $d/Widget.appex.dSYM" "$r.log" &&
+    [ -f "$d/Widget.appex.dSYM/Contents/Resources/DWARF/Widget" ] &&
+    grep -qx "dSYMs: 7 in $d" "$r.out" && ok "row 10 extension dSYM" || { bad "row 10 extension dSYM"; sed 's/^/  /' "$r.log" "$r.out"; }
+else
+  bad "row 10 step failed"; sed 's/^/  /' "$r.out"
+fi
+
+r=$tmp/f; mktree "$r"
+mkdir -p "$r/ext-products"; echo nodebug >"$r/ext-products/Widget"
+if EXTS=Widget EXT_PRODUCTS=$r/ext-products run_step "$r" && [ ! -e "$r/out/dSYMs/Widget.appex.dSYM" ] &&
+   grep -q 'warning: no dSYM for .*Widget.appex' "$r.out"; then ok "row 11 extension without debug map warned"; else
+  bad "row 11 extension without debug map"; sed 's/^/  /' "$r.out"; fi
 
 exit "$fail"
