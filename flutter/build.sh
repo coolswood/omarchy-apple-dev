@@ -261,7 +261,7 @@ for f in "$bundle"/Frameworks/*; do
     *.dylib) add_dsym "$name" "$products/$name" ;;
   esac
 done
-for name in $exts; do
+for name in ${exts:-}; do
   add_dsym "$name.appex" "$ext_products/$name"
 done
 echo "dSYMs: $(find "$dsyms" -mindepth 1 -maxdepth 1 -name '*.dSYM' | wc -l) in $dsyms"
