@@ -56,6 +56,38 @@ def settings_value(settings, name, ext):
     return value
 
 
+# fill-team-prefix.py fills these in every Info.plist of the bundle once the team is known.
+TEAM_PREFIXES = ("$(AppIdentifierPrefix)", "$(TeamIdentifierPrefix)")
+
+
+def expand_plist(value, settings, name):
+    """The $(VAR)s in a static Info.plist's strings (nested values too), as the build expands them:
+    from the target's build settings, with Xcode's defaults for the names a project leaves unset.
+    A name nothing defines stops the build; a literal $(VAR) would ship in the appex."""
+    if isinstance(value, dict):
+        return {k: expand_plist(v, settings, name) for k, v in value.items()}
+    if isinstance(value, list):
+        return [expand_plist(v, settings, name) for v in value]
+    if not isinstance(value, str):
+        return value
+    defaults = {"PRODUCT_NAME": name, "EXECUTABLE_NAME": name, "PRODUCT_MODULE_NAME": re.sub(r"\W", "_", name)}
+
+    def lookup(ref):
+        found = settings.raw(ref)
+        found = defaults.get(ref) if found is None else found
+        if found is None:
+            sys.exit(f"error: extension {name}: Info.plist uses $({ref}), which no build setting defines")
+        return found
+    for i, prefix in enumerate(TEAM_PREFIXES):
+        value = value.replace(prefix, f"\0{i}\0")
+    value = xcode_settings.expand(value, lookup)
+    for i, prefix in enumerate(TEAM_PREFIXES):
+        value = value.replace(f"\0{i}\0", prefix)
+    if "$(" in value.replace(TEAM_PREFIXES[0], "").replace(TEAM_PREFIXES[1], ""):
+        sys.exit(f"error: extension {name}: Info.plist value {value!r} still has a $(...) after expansion")
+    return value
+
+
 def extension_info_plist(settings, gen, name, bundle_id, min_ios):
     """The plist GENERATE_INFOPLIST_FILE = YES writes, plus the target's own."""
     generated = {
@@ -87,6 +119,7 @@ def extension_info_plist(settings, gen, name, bundle_id, min_ios):
             sys.exit(f"error: extension {name}: INFOPLIST_FILE {source} does not exist")
         with open(path, "rb") as f:
             info = plistlib.load(f)
+        info = expand_plist(info, settings, name)
     if (settings.value("GENERATE_INFOPLIST_FILE") or "").upper() == "YES":
         info.update(generated)
     else:
@@ -480,6 +513,49 @@ def self_test():
         assert '"WidgetExt"' in manifest and "_NSExtensionMain" in manifest
         assert "BareExt" not in manifest  # no Swift sources: skipped with a warning
         assert any("no Swift sources" in w for w in result["warnings"]), result["warnings"]
+
+        # A static Info.plist (GENERATE_INFOPLIST_FILE = NO) holds $(VAR)s that the build expands, nested ones too;
+        # the plist in the appex must hold values. The team prefixes stay: fill-team-prefix.py fills them at ship time.
+        with open(os.path.join(proj_dir, "Runner.xcodeproj", "project.pbxproj"), "w") as f:
+            f.write(proj.replace("GENERATE_INFOPLIST_FILE = YES;", "GENERATE_INFOPLIST_FILE = NO;"))
+        static = {"CFBundleIdentifier": "$(PRODUCT_BUNDLE_IDENTIFIER)", "CFBundleExecutable": "$(EXECUTABLE_NAME)",
+                  "CFBundleVersion": "$(CURRENT_PROJECT_VERSION)",
+                  "NSExtension": {"NSExtensionPointIdentifier": "com.apple.widgetkit-extension",
+                                  "NSExtensionPrincipalClass": "$(PRODUCT_MODULE_NAME).Provider"},
+                  "KeychainGroups": ["$(AppIdentifierPrefix)com.example.App"]}
+        with open(os.path.join(widget, "Info.plist"), "wb") as f:
+            plistlib.dump(static, f)
+        out2 = os.path.join(root, "out2")
+        os.makedirs(out2)
+        (ext2,) = plan(app=os.path.join(root, "App"), out_dir=out2, configuration="Release")["extensions"]
+        info = plistlib.load(open(ext2["info_plist"], "rb"))
+        assert info["CFBundleIdentifier"] == "com.example.App.Widget", info["CFBundleIdentifier"]
+        assert info["CFBundleExecutable"] == "WidgetExt", info["CFBundleExecutable"]
+        assert info["CFBundleVersion"] == "7", info["CFBundleVersion"]
+        assert info["NSExtension"]["NSExtensionPrincipalClass"] == "WidgetExt.Provider", info["NSExtension"]
+        assert info["KeychainGroups"] == ["$(AppIdentifierPrefix)com.example.App"], info["KeychainGroups"]
+        # A name no build setting defines is an error, not a literal in the shipped plist.
+        static["CFBundleDisplayName"] = "$(NO_SUCH_SETTING)"
+        with open(os.path.join(widget, "Info.plist"), "wb") as f:
+            plistlib.dump(static, f)
+        out3 = os.path.join(root, "out3")
+        os.makedirs(out3)
+        try:
+            plan(app=os.path.join(root, "App"), out_dir=out3, configuration="Release")
+            raise AssertionError("an undefined $(NO_SUCH_SETTING) was accepted")
+        except SystemExit as e:
+            assert "NO_SUCH_SETTING" in str(e), e
+        # A form expand() does not match, $(NAME:modifier), would stay literal: also an error.
+        static["CFBundleDisplayName"] = "$(PRODUCT_NAME:rfc1034identifier)"
+        with open(os.path.join(widget, "Info.plist"), "wb") as f:
+            plistlib.dump(static, f)
+        out4 = os.path.join(root, "out4")
+        os.makedirs(out4)
+        try:
+            plan(app=os.path.join(root, "App"), out_dir=out4, configuration="Release")
+            raise AssertionError("a $(NAME:modifier) was accepted")
+        except SystemExit as e:
+            assert "still has" in str(e), e
         print("self-test ok")
     finally:
         shutil.rmtree(root)
