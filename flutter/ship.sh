@@ -94,11 +94,18 @@ team=$("$PY" -c 'import plistlib,sys; print(plistlib.load(open(sys.argv[1],"rb")
 # rcodesign --team-name wants the bare 10-character team id (ship.sh step 6).
 [[ "$team" =~ ^[A-Z0-9]{10}$ ]] || { echo "team id '$team' is not a bare 10-character team id" >&2; exit 1; }
 "$PY" "$repo/tools/fill-team-prefix.py" --team "$team" "$bundle"
-# Inside-out: frameworks first, then the app, so the app seals already-signed nested code.
+# Inside-out: frameworks first, then each extension with its own entitlements
+# (asc.py identity writes one per PlugIns/*.appex bundle id), then the app, so
+# the app seals already-signed nested code.
 sign_args=(--pem-file "$sign_dir/key.pem" --certificate-der-file "$sign_dir/cert.der" --team-name "$team")
 shopt -s nullglob
 for framework in "$bundle"/Frameworks/*.framework; do
   rcodesign sign "${sign_args[@]}" "$framework"
+done
+for appex in "$bundle"/PlugIns/*.appex; do
+  ent=$sign_dir/$(basename "$appex" .appex)-entitlements.plist
+  [ -f "$ent" ] || { echo "no $ent: identity wrote none for $(basename "$appex")" >&2; exit 1; }
+  rcodesign sign "${sign_args[@]}" --entitlements-xml-file "$ent" "$appex"
 done
 shopt -u nullglob
 rcodesign sign "${sign_args[@]}" --entitlements-xml-file "$sign_dir/entitlements.plist" "$bundle"
