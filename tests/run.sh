@@ -16,6 +16,13 @@ else
   echo "FAIL self-test"; sed 's/^/  /' "$tmp_selftest"; fail=1
 fi
 
+echo "== flutter/tools/gen-extensions.py --self-test"
+if python3 flutter/tools/gen-extensions.py --self-test >"$tmp_selftest" 2>&1; then
+  grep -E "self-test ok" "$tmp_selftest" | sed 's/^/ok   /'
+else
+  echo "FAIL gen-extensions self-test"; sed 's/^/  /' "$tmp_selftest"; fail=1
+fi
+
 echo "== tools/xcodeproj2xtool.py fixture golden"
 bash tests/xcodeproj2xtool/golden-fixture.sh || fail=1
 
