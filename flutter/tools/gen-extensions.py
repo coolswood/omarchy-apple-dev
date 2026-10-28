@@ -60,17 +60,25 @@ def settings_value(settings, name, ext):
 TEAM_PREFIXES = ("$(AppIdentifierPrefix)", "$(TeamIdentifierPrefix)")
 
 
-def expand_plist(value, settings, name):
+def plist_defaults(gen, name):
+    """The settings Xcode defines for every extension target: the set tools/xcodeproj2xtool.py
+    resolves plist placeholders with (DEVELOPMENT_LANGUAGE is the project's developmentRegion)."""
+    return {"PRODUCT_NAME": name, "EXECUTABLE_NAME": name,
+            "PRODUCT_MODULE_NAME": xcodeproj2xtool.c99_identifier(name),
+            "DEVELOPMENT_LANGUAGE": gen.project.get("developmentRegion") or "en",
+            "PRODUCT_BUNDLE_PACKAGE_TYPE": "XPC!"}
+
+
+def expand_plist(value, settings, name, defaults):
     """The $(VAR)s in a static Info.plist's strings (nested values too), as the build expands them:
     from the target's build settings, with Xcode's defaults for the names a project leaves unset.
     A name nothing defines stops the build; a literal $(VAR) would ship in the appex."""
     if isinstance(value, dict):
-        return {k: expand_plist(v, settings, name) for k, v in value.items()}
+        return {k: expand_plist(v, settings, name, defaults) for k, v in value.items()}
     if isinstance(value, list):
-        return [expand_plist(v, settings, name) for v in value]
+        return [expand_plist(v, settings, name, defaults) for v in value]
     if not isinstance(value, str):
         return value
-    defaults = {"PRODUCT_NAME": name, "EXECUTABLE_NAME": name, "PRODUCT_MODULE_NAME": re.sub(r"\W", "_", name)}
 
     def lookup(ref):
         found = settings.raw(ref)
@@ -119,7 +127,7 @@ def extension_info_plist(settings, gen, name, bundle_id, min_ios):
             sys.exit(f"error: extension {name}: INFOPLIST_FILE {source} does not exist")
         with open(path, "rb") as f:
             info = plistlib.load(f)
-        info = expand_plist(info, settings, name)
+        info = expand_plist(info, settings, name, plist_defaults(gen, name))
     if (settings.value("GENERATE_INFOPLIST_FILE") or "").upper() == "YES":
         info.update(generated)
     else:
@@ -522,7 +530,10 @@ def self_test():
                   "CFBundleVersion": "$(CURRENT_PROJECT_VERSION)",
                   "NSExtension": {"NSExtensionPointIdentifier": "com.apple.widgetkit-extension",
                                   "NSExtensionPrincipalClass": "$(PRODUCT_MODULE_NAME).Provider"},
-                  "KeychainGroups": ["$(AppIdentifierPrefix)com.example.App"]}
+                  "KeychainGroups": ["$(AppIdentifierPrefix)com.example.App"],
+                  "CFBundleDevelopmentRegion": "$(DEVELOPMENT_LANGUAGE)",
+                  "CFBundlePackageType": "$(PRODUCT_BUNDLE_PACKAGE_TYPE)", "CFBundleName": "$(PRODUCT_NAME)",
+                  "CFBundleShortVersionString": "$(MARKETING_VERSION)"}
         with open(os.path.join(widget, "Info.plist"), "wb") as f:
             plistlib.dump(static, f)
         out2 = os.path.join(root, "out2")
@@ -534,6 +545,18 @@ def self_test():
         assert info["CFBundleVersion"] == "7", info["CFBundleVersion"]
         assert info["NSExtension"]["NSExtensionPrincipalClass"] == "WidgetExt.Provider", info["NSExtension"]
         assert info["KeychainGroups"] == ["$(AppIdentifierPrefix)com.example.App"], info["KeychainGroups"]
+        assert info["CFBundleDevelopmentRegion"] == "en", info["CFBundleDevelopmentRegion"]
+        assert info["CFBundlePackageType"] == "XPC!", info["CFBundlePackageType"]
+        assert info["CFBundleName"] == "WidgetExt" and info["CFBundleShortVersionString"] == "2.5", info
+        # DEVELOPMENT_LANGUAGE is the project's developmentRegion, as in tools/xcodeproj2xtool.py.
+        with open(os.path.join(proj_dir, "Runner.xcodeproj", "project.pbxproj"), "w") as f:
+            f.write(proj.replace("GENERATE_INFOPLIST_FILE = YES;", "GENERATE_INFOPLIST_FILE = NO;")
+                    .replace("developmentRegion = en;", "developmentRegion = de;"))
+        out_de = os.path.join(root, "out_de")
+        os.makedirs(out_de)
+        (ext_de,) = plan(app=os.path.join(root, "App"), out_dir=out_de, configuration="Release")["extensions"]
+        info = plistlib.load(open(ext_de["info_plist"], "rb"))
+        assert info["CFBundleDevelopmentRegion"] == "de", info["CFBundleDevelopmentRegion"]
         # A name no build setting defines is an error, not a literal in the shipped plist.
         static["CFBundleDisplayName"] = "$(NO_SUCH_SETTING)"
         with open(os.path.join(widget, "Info.plist"), "wb") as f:
