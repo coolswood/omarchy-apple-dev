@@ -43,6 +43,9 @@ echo "== 2. Stamp and wrap =="
 "$PY" "$ASC" frameworks "$app_dir"
 
 echo "== 3. Distribution identity =="
+if [ -z "${ASC_ENTITLEMENTS_PATH:-}" ]; then
+  echo "warning: ASC_ENTITLEMENTS_PATH is not set: signing WITHOUT the Sign in with Apple, push (aps-environment) and Associated Domains entitlements — asc.py takes capability entitlements only from that file, not from the profile or the Xcode project" >&2
+fi
 "$PY" "$ASC" identity "$app_dir" "$out/signing"
 
 echo "== 4. Sign inside-out =="
