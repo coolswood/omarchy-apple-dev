@@ -11,7 +11,10 @@ asked to — neither autolink nor an explicit -weak_framework survives its
 allowed-clients tbd check ("cannot link directly ... not an allowed
 client") — so the load command is fixed after the link instead. For dyld a
 weak missing library simply resolves to NULL pointers, exactly what an
-Xcode-built app gets.
+Xcode-built app gets. Safe even when symbols are bound against the
+framework: the Sentry 9.x link closure binds none (verified against the
+chained-fixups imports table of a real Runner), so no strong imports can
+dangle from the flipped command.
 
 Usage: weaklink.py <mach-o> <Framework> [<Framework> ...]
 Prints one line per rewrite; exit 0 even when nothing matched (the
@@ -25,8 +28,13 @@ import sys
 MH_MAGIC_64 = 0xFEEDFACF
 FAT_MAGIC = 0xBEBAFECA  # little-endian view of 0xCAFEBABE
 LC_LOAD_DYLIB = 0xC
-LC_LOAD_WEAK_DYLIB = 0x18
+# LC_REQ_DYLD | 0x18. The bare 0x18 written here before was an invalid
+# load command: App Store upload rejected the binary with
+# "error 91032: Invalid executable ... contains an invalid load command"
+# (ITMS-91032) even though the flip was byte-for-byte the intended shape.
+LC_LOAD_WEAK_DYLIB = 0x80000018
 CPU_TYPE_ARM64 = 0x0100000C
+
 
 
 def slices(data):
