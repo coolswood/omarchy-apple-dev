@@ -49,6 +49,7 @@ families=$(setting TARGETED_DEVICE_FAMILY); families=${families:-1,2}
 version=$(sed -n 's/^version: *//p' "$app/pubspec.yaml" | head -n1)
 BUILD_NAME=${BUILD_NAME:-${version%%+*}}
 BUILD_NUMBER=${BUILD_NUMBER:-$([ "${version#*+}" != "$version" ] && echo "${version#*+}" || echo 1)}
+configuration=Release  # this build has no flavors
 sdk_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["Version"])' "$ios_sdk/SDKSettings.json")
 
 out=$app/build/ios-linux
@@ -76,13 +77,44 @@ for d in "$@"; do defines+="${defines:+,}$(printf '%s' "$d" | base64 -w0)"; done
 
 echo "== 2. Native: Runner and plugins as one Swift package"
 python3 "$here/tools/gen-shell-package.py" "$app" "$shell_pkg" "$MIN_IOS"
+# Native-asset frameworks (flutter_soloud, objective_c, sqlite3, ...) are
+# dlopen'ed by the Dart runtime only on demand, but plugins whose SwiftPM
+# package compiles with -undefined dynamic_lookup against the asset's exports
+# need them in the initial link closure: give Runner an LC_LOAD_DYLIB for each
+# (what Xcode's native-assets phase does on a Mac).
+natargs=()
+if [ -d "$asm/native_assets" ]; then
+  natargs+=(-Xlinker -F -Xlinker "$asm/native_assets")
+  for f in "$asm"/native_assets/*.framework; do
+    [ -d "$f" ] || continue
+    natargs+=(-Xlinker -framework -Xlinker "$(basename "${f%.framework}")")
+  done
+fi
 (cd "$shell_pkg" && swift build --configuration release --build-system swiftbuild \
   --triple "arm64-apple-ios$MIN_IOS" --toolset "$sdkb/toolset-swb.json" --product Runner \
   -Xswiftc "-F$asm" -Xcc "-F$asm" -Xlinker "-F$asm" -Xlinker -framework -Xlinker Flutter \
+  "${natargs[@]+"${natargs[@]}"}" \
   -Xlinker -rpath -Xlinker @executable_path/Frameworks \
   -Xlinker -platform_version -Xlinker ios -Xlinker "$MIN_IOS" -Xlinker "$sdk_version") \
   >"$out/shell-build.log" 2>&1 || { grep -E 'error' "$out/shell-build.log" | head -n 40 >&2; exit 1; }
 products=$shell_pkg/.build/out/Products/Release-iphoneos
+
+echo "== 2b. Extensions: the app extensions the Runner embeds (widgets and friends)"
+ext_pkg=$out/extensions
+python3 "$here/tools/gen-extensions.py" "$app" "$ext_pkg" "$configuration"
+ext_plan=$(python3 -c 'import json,sys
+plan = json.load(open(sys.argv[1]))
+print(plan["platform"])
+print(" ".join(e["name"] for e in plan["extensions"]))' "$ext_pkg/plan.json")
+ext_min=${ext_plan%%$'\n'*}
+exts=${ext_plan#*$'\n'}
+if [ -n "$exts" ]; then
+  (cd "$ext_pkg" && swift build --configuration release --build-system swiftbuild \
+    --triple "arm64-apple-ios$ext_min" --toolset "$sdkb/toolset-swb.json" \
+    -Xlinker -platform_version -Xlinker ios -Xlinker "$ext_min" -Xlinker "$sdk_version") \
+    >"$out/extensions-build.log" 2>&1 || { grep -E 'error' "$out/extensions-build.log" | head -n 40 >&2; exit 1; }
+  ext_products=$ext_pkg/.build/out/Products/Release-iphoneos
+fi
 
 echo "== 3. Wrapper: icons, storyboards, Info.plist"
 "$tools/actool" "$app/ios/Runner/Assets.xcassets" --compile "$bundle" --platform iphoneos \
@@ -103,12 +135,139 @@ echo "== 4. Assemble"
 cp "$products/Runner" "$bundle/Runner"
 strip -x "$bundle/Runner"
 for b in "$products"/*.bundle; do [ ! -d "$b" ] || cp -R "$b" "$bundle/"; done
+# Dynamic SwiftPM products: a plugin may vend a .dylib product (flutter_soloud
+# is type: .dynamic) or a dynamic framework (ScreenPreventerKit); Runner's load
+# commands reference them under @rpath, which resolves to Frameworks. SwiftBuild
+# also stages unreferenced binaryTargets into products (Sentry.framework here,
+# which rcodesign cannot re-sign), so embed only what is actually loaded. The
+# scan repeats until no new product is embedded, so a chain of any depth
+# (Runner -> F0 -> F1 -> ...) closes; App/Flutter/native-asset frameworks are
+# copied first so their binaries are scanned too.
+find "$products" -maxdepth 1 -name '*.dylib' -exec cp {} "$bundle/Frameworks/" \;
 cp -R "$asm/App.framework" "$asm/Flutter.framework" "$bundle/Frameworks/"
 for f in "$asm"/native_assets/*.framework; do [ ! -d "$f" ] || cp -R "$f" "$bundle/Frameworks/"; done
+for _ in $(seq 1 64); do  # ponytail: fixed 64-iteration cap; products are finite so the loop exits on its own first
+  before=$(find "$bundle/Frameworks" -maxdepth 1 | wc -l)
+  {
+    llvm-otool -l "$bundle/Runner" "$bundle"/Frameworks/*.dylib 2>/dev/null || true
+    for fw in "$bundle"/Frameworks/*.framework; do
+      bin=$(basename "${fw%.framework}")
+      [ -f "$fw/$bin" ] && llvm-otool -l "$fw/$bin" 2>/dev/null || true
+    done
+  } | sed -n 's/.*name @rpath\/\([^ ]*\).*/\1/p' | sort -u |
+    while read -r name; do
+      case $name in
+        *.framework/*) rel=${name%%.framework/*}.framework ;;
+        *) rel=$name ;;
+      esac
+      if [ -e "$products/$rel" ] && [ ! -e "$bundle/Frameworks/$rel" ]; then
+        echo "embedding $rel"
+        cp -R "$products/$rel" "$bundle/Frameworks/"
+      fi
+    done
+  after=$(find "$bundle/Frameworks" -maxdepth 1 | wc -l)
+  [ "$after" -gt "$before" ] || break
+done
+# Each extension becomes PlugIns/<name>.appex: the executable build.sh built
+# above, the Info.plist gen-extensions.py wrote, the target's catalogs as
+# Assets.car, its string catalogs as X.lproj, and the rest of its resources,
+# as Xcode assembles an extension.
+if [ -n "$exts" ]; then
+  mkdir -p "$bundle/PlugIns"
+  while IFS= read -r name; do
+    [ -n "$name" ] || continue
+    appex=$bundle/PlugIns/$name.appex
+    mkdir -p "$appex"
+    cp "$ext_products/$name" "$appex/$name"
+    strip -x "$appex/$name"
+    cp "$ext_pkg/$name-Info.plist" "$appex/Info.plist"
+    field() { # a plan.json list of one extension, one entry per line
+      python3 -c 'import json, sys
+e = next(x for x in json.load(open(sys.argv[1]))["extensions"] if x["name"] == sys.argv[2])
+if sys.argv[3] == "resources":
+    print("\n".join(f"{src}\t{dst}" for src, dst in e["resources"]))
+else:
+    print("\n".join(e[sys.argv[3]]))' "$ext_pkg/plan.json" "$name" "$1"
+    }
+    assets=$(field assets)
+    if [ -n "$assets" ]; then
+      mapfile -t asset_dirs <<<"$assets"
+      "$tools/actool" "${asset_dirs[@]}" --compile "$appex" --platform iphoneos \
+        --minimum-deployment-target "$ext_min" --target-device iphone --target-device ipad \
+        --output-partial-info-plist "$stage/$name-assets.plist" \
+        --output-format human-readable-text >>"$out/actool.log" 2>&1 ||
+        { tail -n 20 "$out/actool.log" >&2; exit 1; }
+      python3 -c 'import plistlib, sys
+p = sys.argv[1]
+d = plistlib.load(open(p, "rb"))
+d.update(plistlib.load(open(sys.argv[2], "rb")))
+plistlib.dump(d, open(p, "wb"), fmt=plistlib.FMT_BINARY)' "$appex/Info.plist" "$stage/$name-assets.plist"
+    fi
+    while IFS= read -r catalog; do
+      [ -n "$catalog" ] || continue
+      python3 "$here/../tools/xcstringstool" compile "$catalog" --output-dir "$appex" \
+        --serialization-format binary >>"$out/xcstringstool.log" 2>&1 ||
+        { tail -n 10 "$out/xcstringstool.log" >&2; exit 1; }
+    done <<<"$(field strings)"
+    while IFS=$'\t' read -r src dst; do
+      [ -n "$src" ] || continue
+      mkdir -p "$appex/$(dirname "$dst")"
+      cp -R "$src" "$appex/$dst"
+    done <<<"$(field resources)"
+    printf 'BNDL????' >"$appex/PkgInfo"
+  done < <(python3 -c 'import json, sys
+print("\n".join(e["name"] for e in json.load(open(sys.argv[1]))["extensions"]))' "$ext_pkg/plan.json")
+fi
 cp "$app/ios/Flutter/AppFrameworkInfo.plist" "$bundle/"
 printf 'APPL????' >"$bundle/PkgInfo"
 rm -f "$out/Runner.ipa"
 (cd "$out" && zip -qry Runner.ipa Payload)
+
+echo "== 5. Debug symbols"
+# One dSYM per Mach-O image in the app, as an Xcode archive's dSYMs folder, for
+# crash symbolication (Crashlytics, Sentry, App Store Connect). App.framework's
+# comes from flutter assemble (dsymutil after gen_snapshot), Flutter.framework's
+# from the engine artifacts, a native asset's from its build. Runner and the
+# SwiftPM products get SwiftBuild's dSYM when it wrote one, else dsymutil on
+# the unstripped product: its debug map points at the objects in .build. The
+# bundle's copies keep the products' UUIDs (strip, stamp and signing do not
+# change LC_UUID), so each dSYM matches its image.
+dsyms=$out/dSYMs
+# Copies of SwiftPM outputs can be read-only, which would stop the next rm.
+[ ! -d "$dsyms" ] || chmod -R u+w "$dsyms"
+rm -rf "$dsyms"; mkdir -p "$dsyms"
+: >"$out/dsymutil.log"
+engine_dsym=$flutter_root/bin/cache/artifacts/engine/ios-release/Flutter.xcframework/ios-arm64/dSYMs/Flutter.framework.dSYM
+dsym_missing=()
+add_dsym() { # <image name, e.g. Runner.app or Foo.framework> <unstripped binary or empty>
+  local name=$1 binary=$2 src
+  for src in "$asm/$name.dSYM" "$asm/native_assets/$name.dSYM" "$products/${name%.app}.dSYM"; do
+    if [ -d "$src" ]; then cp -R "$src" "$dsyms/$name.dSYM"; return; fi
+  done
+  if [ "$name" = Flutter.framework ] && [ -d "$engine_dsym" ]; then cp -R "$engine_dsym" "$dsyms/"; return; fi
+  # dsymutil succeeds on a binary without a debug map (a prebuilt one) but
+  # leaves no DWARF file: that counts as missing.
+  if [ -n "$binary" ] && [ -f "$binary" ] &&
+     dsymutil "$binary" -o "$dsyms/$name.dSYM" >>"$out/dsymutil.log" 2>&1 &&
+     [ -n "$(find "$dsyms/$name.dSYM/Contents/Resources/DWARF" -type f 2>/dev/null)" ]; then return; fi
+  rm -rf "$dsyms/$name.dSYM"
+  dsym_missing+=("$name")
+}
+add_dsym Runner.app "$products/Runner"
+for f in "$bundle"/Frameworks/*; do
+  name=$(basename "$f")
+  case $name in
+    *.framework) add_dsym "$name" "$products/$name/${name%.framework}" ;;
+    *.dylib) add_dsym "$name" "$products/$name" ;;
+  esac
+done
+for name in ${exts:-}; do
+  add_dsym "$name.appex" "$ext_products/$name"
+done
+echo "dSYMs: $(find "$dsyms" -mindepth 1 -maxdepth 1 -name '*.dSYM' | wc -l) in $dsyms"
+if [ "${#dsym_missing[@]}" -gt 0 ]; then
+  echo "warning: no dSYM for ${dsym_missing[*]} (see $out/dsymutil.log)" >&2
+fi
 echo "Built $out/Runner.ipa ($BUNDLE_ID $BUILD_NAME+$BUILD_NUMBER, iOS $MIN_IOS+)"
 
 if [ -n "$install" ]; then
