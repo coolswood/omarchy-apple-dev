@@ -8,7 +8,7 @@
 - `flutter/ship.sh` keeps this fork's contract — it uploads by default (SHIP_SKIP_UPLOAD=1 stops after validation), names the ipa `Runner-<version>-<N>.ipa`, and after the upload runs `asc.py publish` with RELEASE_NOTES_JSON: What's New in every store locale, the build attached to the version, the submission for App Review (upstream's ship.sh deliberately never submits; this fork's release flow depends on it). New, from upstream: the build number argument is optional (BUILD_NUMBER, then the CFBundleVersion build.sh recorded), ASC_PROFILE signs with an identity and profile made elsewhere, and with ASC_ENTITLEMENTS_PATH unset the CODE_SIGN_ENTITLEMENTS file of the built configuration is used, as Xcode signs.
 - `tools/asc.py` gains `given-identity`, the export options support, the cryptography 42 message and the static-framework drop, and keeps `publish`.
 - The ipsw pin moves to 3.1.743 with real sha256 checksums for both architectures (an earlier bump carried the old checksums, which would have failed a fresh install).
-- `tools/install-usb.py` (USB install through a userspace tunnel, no root) stays fork-only for now.
+- The fork-only `tools/install-usb.py` helper was dropped: `pymobiledevice3 apps install --userspace --udid` (11.38+) does the same no-root USB install in one process (verified on a real device 2026-11-07).
 
 ## v0.4.3
 
