@@ -16,8 +16,8 @@
 # below is fork-only on purpose. ASC_PROFILE and the entitlements
 # auto-detection are upstream's, kept here.
 #
-# Env: ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_PATH (required unless
-# ASC_PROFILE or nothing at all is given for signing; same as ship.sh),
+# Env: ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_PATH (required for signing and
+# uploading with a Distribution identity),
 # ASC_PROFILE + ASC_SIGNING_KEY + ASC_SIGNING_CERT to sign with an identity
 # and profile made elsewhere (no API key on the build machine; no ASC call
 # except the upload), ASC_ENTITLEMENTS_PATH and APP_GROUPS (optional, passed
@@ -119,6 +119,7 @@ version=$("$PY" -c 'import plistlib,sys; print(plistlib.load(open(sys.argv[1],"r
 ipa="$out/ship/Runner-$version-$build.ipa"
 rm -f "$ipa"   # zip on an existing archive updates it: deleted files would linger
 stage=$(mktemp -d)
+trap 'rm -rf "$stage"' EXIT
 mkdir "$stage/Payload"
 cp -a "$app_dir" "$stage/Payload/"
 (cd "$stage" && zip -qry "$(realpath -m "$ipa")" Payload)
@@ -130,7 +131,7 @@ echo "== 6. Offline App Store validation =="
 
 if [ -z "${SHIP_SKIP_UPLOAD:-}" ]; then
   if [ "$signing_mode" != identity ]; then
-    echo "$signing_mode signs without the ASC key: skipping the upload (set ASC_KEY_ID/ASC_ISSUER_ID/ASC_KEY_PATH to upload)"
+    echo "$signing_mode signs without the ASC key: skipping the upload${RELEASE_NOTES_JSON:+ and the publish} (set ASC_KEY_ID/ASC_ISSUER_ID/ASC_KEY_PATH to upload)"
   else
     echo "== 7. Upload to App Store Connect =="
     "$PY" "$ASC" upload "$ipa"

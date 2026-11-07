@@ -18,7 +18,8 @@
 #     ship/Runner-1.0.0-7.ipa; no upload (test-identity cannot upload). The ipa
 #     holds the signed copy; the built bundle has no _CodeSignature and no
 #     embedded.mobileprovision
-#   2  build no:  BUILD_NUMBER=42 -> stamp gets 42
+#   2  build no:  BUILD_NUMBER=42 -> stamp gets 42; the positional argument
+#     (the release runbook's ship.sh <dir> <build>) wins over it
 #   3  skip:      SHIP_SKIP_UPLOAD=1 with the three ASC variables -> identity,
 #     validate, no upload line
 #   4  upload:    the three ASC variables -> identity (not test-identity),
@@ -164,6 +165,11 @@ fi
 mkapp "$tmp/r2"
 if drive "$tmp/r2.log" BUILD_NUMBER=42 -- "$tmp/r2" >/dev/null 2>&1 &&
    grep -qx 'asc stamp Runner.app 42' "$tmp/r2.log"; then ok "row 2 BUILD_NUMBER"; else bad "row 2 BUILD_NUMBER"; fi
+
+# Row 2b: the positional build number (the release runbook's ship.sh <dir> <build>) wins over BUILD_NUMBER.
+mkapp "$tmp/r2b"
+if drive "$tmp/r2b.log" BUILD_NUMBER=42 -- "$tmp/r2b" 7 >/dev/null 2>&1 &&
+   grep -qx 'asc stamp Runner.app 7' "$tmp/r2b.log"; then ok "row 2b positional build number wins"; else bad "row 2b positional build number"; fi
 
 # Row 3
 mkapp "$tmp/r3"
