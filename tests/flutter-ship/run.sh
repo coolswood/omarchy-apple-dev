@@ -4,23 +4,32 @@
 # their calls (no Apple account, no SDK): the rows check the order of the
 # steps, their arguments, and what is left on disk.
 #
+# This is the fork's ship.sh (reconciled with upstream v0.4.4): it uploads by
+# default (SHIP_SKIP_UPLOAD=1 stops), names the ipa
+# build/ios-linux/ship/Runner-<version>-<build>.ipa, signs into
+# build/ios-linux/signing, and runs asc.py publish after the upload when
+# RELEASE_NOTES_JSON is set. Upstream's ship.sh takes --upload and writes
+# ship-signing/Runner-store.ipa instead.
+#
 # Rows (expected results written before the code):
 #   1  default:   no ASC_KEY_ID -> stamp with build.sh's CFBundleVersion (7),
 #     frameworks, test-identity, fill-team-prefix, rcodesign on both
 #     frameworks, then the app with the entitlements, then validate on
-#     Runner-store.ipa; no upload. The ipa holds the signed copy; the built
-#     bundle has no _CodeSignature and no embedded.mobileprovision
+#     ship/Runner-1.0.0-7.ipa; no upload (test-identity cannot upload). The ipa
+#     holds the signed copy; the built bundle has no _CodeSignature and no
+#     embedded.mobileprovision
 #   2  build no:  BUILD_NUMBER=42 -> stamp gets 42
-#   3  no key:    --upload without ASC_KEY_ID exits non-zero before any step
-#   4  upload:    --upload with the three ASC variables -> identity (not
-#     test-identity), upload after validate
+#   3  skip:      SHIP_SKIP_UPLOAD=1 with the three ASC variables -> identity,
+#     validate, no upload line
+#   4  upload:    the three ASC variables -> identity (not test-identity),
+#     upload after validate, then publish when RELEASE_NOTES_JSON is set
 #   5  no build:  an app dir without build/ios-linux/Payload/Runner.app exits 1
 #     and names flutter/build.sh
 #   6  read-only: a read-only built bundle (SwiftPM outputs are) still signs
 #   7  bad team:  an entitlements team id that is not 10 characters stops
 #     before rcodesign runs
 #   8  given:     ASC_PROFILE (with ASC_KEY_ID set too) -> given-identity, not
-#     identity or test-identity, and no TEST-identity warning
+#     identity or test-identity, no TEST-identity warning, no upload
 # Requested entitlements, with the app's ios/ from tests/flutter-configuration
 # and the configuration build.sh records in build/ios-linux/configuration:
 #   9  flavor:    Release-dev -> the identity step gets ASC_ENTITLEMENTS_PATH=
@@ -133,19 +142,19 @@ log=$tmp/r1.log
 if drive "$log" -- "$tmp/r1" >"$tmp/r1.out" 2>&1; then
   expected="asc stamp Runner.app 7
 asc frameworks Runner.app
-asc test-identity Runner.app ship-signing
+asc test-identity Runner.app signing
 fill-team-prefix --team TEAM000000 Runner.app
 rcodesign App.framework
 rcodesign Flutter.framework
 rcodesign Runner.app ent=entitlements.plist
-asc validate Runner-store.ipa"
+asc validate Runner-1.0.0-7.ipa"
   if [ "$(cat "$log")" = "$expected" ]; then ok "row 1 steps and order"; else
     bad "row 1 steps and order"; diff <(echo "$expected") "$log" | sed 's/^/  /'; fi
   built=$tmp/r1/build/ios-linux/Payload/Runner.app
   if [ ! -e "$built/_CodeSignature" ] && [ ! -e "$built/embedded.mobileprovision" ] &&
      [ ! -e "$built/Frameworks/App.framework/_CodeSignature" ]; then
     ok "row 1 built bundle untouched"; else bad "row 1 built bundle was changed"; fi
-  if unzip -l "$tmp/r1/build/ios-linux/Runner-store.ipa" | grep -q 'Payload/Runner.app/Frameworks/Flutter.framework/_CodeSignature/'; then
+  if unzip -l "$tmp/r1/build/ios-linux/ship/Runner-1.0.0-7.ipa" | grep -q 'Payload/Runner.app/Frameworks/Flutter.framework/_CodeSignature/'; then
     ok "row 1 ipa holds the signed frameworks"; else bad "row 1 ipa frameworks unsigned"; fi
 else
   bad "row 1 exited non-zero"; sed 's/^/  /' "$tmp/r1.out"
@@ -158,19 +167,23 @@ if drive "$tmp/r2.log" BUILD_NUMBER=42 -- "$tmp/r2" >/dev/null 2>&1 &&
 
 # Row 3
 mkapp "$tmp/r3"
-if drive "$tmp/r3.log" -- --upload "$tmp/r3" >/dev/null 2>&1; then
-  bad "row 3 --upload without a key succeeded"
-elif [ -s "$tmp/r3.log" ]; then bad "row 3 ran steps before failing"; else ok "row 3 --upload needs the key"; fi
+if drive "$tmp/r3.log" ASC_KEY_ID=KEY1234567 ASC_ISSUER_ID=issuer ASC_KEY_PATH=/dev/null SHIP_SKIP_UPLOAD=1 -- \
+   "$tmp/r3" >/dev/null 2>&1 &&
+   grep -qx 'asc identity Runner.app signing' "$tmp/r3.log" &&
+   grep -qx 'asc validate Runner-1.0.0-7.ipa' "$tmp/r3.log" &&
+   ! grep -q 'asc upload' "$tmp/r3.log"; then ok "row 3 SHIP_SKIP_UPLOAD stops after validate"; else
+  bad "row 3 SHIP_SKIP_UPLOAD"; sed 's/^/  /' "$tmp/r3.log"; fi
 
 # Row 4
 mkapp "$tmp/r4"
-if drive "$tmp/r4.log" ASC_KEY_ID=KEY1234567 ASC_ISSUER_ID=issuer ASC_KEY_PATH=/dev/null -- \
-   --upload "$tmp/r4" >/dev/null 2>&1 &&
-   grep -qx 'asc identity Runner.app ship-signing' "$tmp/r4.log" &&
+if drive "$tmp/r4.log" ASC_KEY_ID=KEY1234567 ASC_ISSUER_ID=issuer ASC_KEY_PATH=/dev/null \
+   RELEASE_NOTES_JSON=$tmp/notes.json -- "$tmp/r4" >/dev/null 2>&1 &&
+   grep -qx 'asc identity Runner.app signing' "$tmp/r4.log" &&
    ! grep -q 'test-identity' "$tmp/r4.log" &&
-   [ "$(tail -n 2 "$tmp/r4.log")" = "asc validate Runner-store.ipa
-asc upload Runner-store.ipa" ]; then ok "row 4 identity and upload"; else
-  bad "row 4 identity and upload"; sed 's/^/  /' "$tmp/r4.log"; fi
+   [ "$(tail -n 3 "$tmp/r4.log")" = "asc validate Runner-1.0.0-7.ipa
+asc upload Runner-1.0.0-7.ipa
+asc publish Runner-1.0.0-7.ipa notes.json" ]; then ok "row 4 identity, upload and publish"; else
+  bad "row 4 identity, upload and publish"; sed 's/^/  /' "$tmp/r4.log"; fi
 
 # Row 5
 mkdir -p "$tmp/r5"
@@ -193,7 +206,7 @@ elif grep -q '^rcodesign' "$tmp/r7.log"; then bad "row 7 signed with a bad team 
 # Row 8
 mkapp "$tmp/r8"
 if drive "$tmp/r8.log" ASC_KEY_ID=KEY1234567 ASC_PROFILE=/dev/null -- "$tmp/r8" >"$tmp/r8.out" 2>&1 &&
-   grep -qx 'asc given-identity Runner.app ship-signing' "$tmp/r8.log" &&
+   grep -qx 'asc given-identity Runner.app signing' "$tmp/r8.log" &&
    ! grep -q '^asc identity\|test-identity' "$tmp/r8.log" &&
    ! grep -q 'TEST identity' "$tmp/r8.out"; then ok "row 8 given identity"; else
   bad "row 8 given identity"; sed 's/^/  /' "$tmp/r8.log" "$tmp/r8.out"; fi
@@ -208,19 +221,19 @@ flavored() {
 # Row 9
 flavored "$tmp/r9" flavors Release-dev
 if drive "$tmp/r9.log" -- "$tmp/r9" >"$tmp/r9.out" 2>&1 &&
-   grep -qx "asc test-identity Runner.app ship-signing ent=$tmp/r9/ios/Runner/dev.entitlements" "$tmp/r9.log"; then
+   grep -qx "asc test-identity Runner.app signing ent=$tmp/r9/ios/Runner/dev.entitlements" "$tmp/r9.log"; then
   ok "row 9 the flavor's entitlements"; else bad "row 9 flavor entitlements"; sed 's/^/  /' "$tmp/r9.log" "$tmp/r9.out"; fi
 
 # Row 10
 flavored "$tmp/r10" flavors Release-dev
 if drive "$tmp/r10.log" ASC_ENTITLEMENTS_PATH=/given.entitlements -- "$tmp/r10" >"$tmp/r10.out" 2>&1 &&
-   grep -qx "asc test-identity Runner.app ship-signing ent=/given.entitlements" "$tmp/r10.log"; then
+   grep -qx "asc test-identity Runner.app signing ent=/given.entitlements" "$tmp/r10.log"; then
   ok "row 10 ASC_ENTITLEMENTS_PATH wins"; else bad "row 10 ASC_ENTITLEMENTS_PATH"; sed 's/^/  /' "$tmp/r10.log"; fi
 
 # Row 11
 flavored "$tmp/r11" flavors Release-Prod
 if drive "$tmp/r11.log" -- "$tmp/r11" >"$tmp/r11.out" 2>&1 &&
-   grep -qx "asc test-identity Runner.app ship-signing ent=$tmp/r11/ios/Runner/Runner.entitlements" "$tmp/r11.log"; then
+   grep -qx "asc test-identity Runner.app signing ent=$tmp/r11/ios/Runner/Runner.entitlements" "$tmp/r11.log"; then
   ok "row 11 \$(SRCROOT) path"; else bad "row 11 \$(SRCROOT) path"; sed 's/^/  /' "$tmp/r11.log" "$tmp/r11.out"; fi
 
 # Row 12
@@ -234,7 +247,7 @@ else bad "row 12 message"; sed 's/^/  /' "$tmp/r12.out"; fi
 flavored "$tmp/r13" stock Release
 mkapp "$tmp/r13b"
 if drive "$tmp/r13.log" -- "$tmp/r13" >/dev/null 2>&1 && drive "$tmp/r13b.log" -- "$tmp/r13b" >/dev/null 2>&1 &&
-   ! grep -q "ship-signing ent=" "$tmp/r13.log" "$tmp/r13b.log"; then ok "row 13 no entitlements as before"
+   ! grep -q "signing ent=" "$tmp/r13.log" "$tmp/r13b.log"; then ok "row 13 no entitlements as before"
 else bad "row 13 no entitlements"; sed 's/^/  /' "$tmp/r13.log" "$tmp/r13b.log"; fi
 
 # Row 14
