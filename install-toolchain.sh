@@ -89,6 +89,7 @@ sdk_install_from() {
 }
 
 REPO_DIR=$(dirname "$(readlink -f "$0")")
+. "$REPO_DIR/tools/sdk-state.sh"
 # SwiftPM keeps Swift SDKs under $XDG_CONFIG_HOME/swiftpm when XDG_CONFIG_HOME is
 # set (it is in an Omarchy desktop terminal), else under ~/.swiftpm.
 DARWIN_SDK_BUNDLE="${XDG_CONFIG_HOME:+$XDG_CONFIG_HOME/swiftpm}"
@@ -103,17 +104,23 @@ fetch_commit() { # repo sha dir
   fi
 }
 
-# xtool 1.20.1 plus fixes not released yet (xtool-org/xtool#290-#293, #295, #302): branch-pinned
-# dependencies, `type: .dynamic` package products, extension dylibs kept in the host app
-# (FINDINGS.md 24.1, 27.3, 30), and real source paths for SourceKit-LSP (FINDINGS.md 55).
-# Built from source with its Swift runtime libraries next to it
-# ($ORIGIN only), so a toolchain swap or upgrade cannot break it.
+# xtool main at 03fb48c (after 1.24.0, so it carries the provider user-agent correction,
+# xtool-org/xtool#406, and the stdin fix, xtool-org/xtool#375) plus the packaging/build-server
+# fixes in #290-#293, #295 and #302, and the profile fix xtool-org/xtool#430 with #422. Not
+# later: main does not build in release since xtool-org/xtool#389 (xtool-org/xtool#431).
+# The fork tags it omarchy-main-pre389-pin, so the fetch does not depend on a pull request ref.
+# Built from source with its Swift runtime libraries next to it ($ORIGIN only).
 XTOOL_REPO=https://github.com/joshuaswarren/xtool
-XTOOL_SHA=f0a1f90efdbb0dc023e276ff529da92618da7a87
+XTOOL_SHA=c9f436303f9fe4dbeef46dfb9e208f1bb0912fe4
+# The SDK stamp that pin writes (SDKBuilder.currentSDKVersion: epoch, darwin-tools and OpenAppleMacros
+# versions). Change it together with XTOOL_SHA; tests/sdk-state/check.sh compares it with the pinned source.
+XTOOL_SDK_VERSION="epoch=4,darwinTools=1.1.0,oam=1.4.1"
 install_xtool() {
   local src="$HOME/.cache/omarchy-apple-dev/xtool-$XTOOL_SHA"
   local dest="$HOME/.local/lib/omarchy-apple-dev/xtool-$XTOOL_SHA"
-  if [ ! -x "$dest/xtool" ]; then
+  # The runtime libraries are copied after xtool, so a run that stopped between the two
+  # left xtool alone; checking libswiftCore.so too makes the next run finish the install.
+  if [ ! -x "$dest/xtool" ] || [ ! -e "$dest/libswiftCore.so" ]; then
     fetch_commit "$XTOOL_REPO" "$XTOOL_SHA" "$src"
     echo "Building xtool $XTOOL_SHA (first run: about 7 minutes)"
     (cd "$src" && swift build -c release --product xtool -Xswiftc -no-toolchain-stdlib-rpath >/dev/null)
@@ -121,7 +128,7 @@ install_xtool() {
     bin=$(cd "$src" && swift build -c release --show-bin-path)
     runtime="$(dirname "$(dirname "$(readlink -f "$(command -v swift)")")")/lib/swift/linux"
     mkdir -p "$dest"
-    install -m755 "$bin/xtool" "$bin/libXADI.so" "$dest/"
+    install -m755 "$bin/xtool" "$dest/"
     LD_LIBRARY_PATH="$runtime" ldd "$dest/xtool" | awk -v rt="$runtime/" 'index($3, rt) == 1 { print $3 }' |
       xargs -r install -m644 -t "$dest"
   fi
@@ -500,14 +507,28 @@ if [ "${1:-}" = "--repair" ]; then
   fi
   swift --version | head -n1
   toolchain_first_on_path
-  cached=$(ls -dt "$SDK_CACHE"/darwin-*.xtoolsdk 2>/dev/null | head -n1 || true)
+  # repair: newest cached bundle that carries the pinned xtool's stamp. One built by an older xtool
+  # would be registered and then refused by `xtool dev`.
+  cached=
+  stale_seen=
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    if [ "$(sdk_state "$c" "$XTOOL_SDK_VERSION")" = current ]; then cached=$c; break; fi
+    [ -n "$stale_seen" ] || stale_seen=$c
+  done < <(ls -dt "$SDK_CACHE"/darwin-*.xtoolsdk 2>/dev/null || true)
+  if [ -z "$cached" ] && [ -n "$stale_seen" ]; then
+    sdk_stale_note "$(sdk_bundle_version "$stale_seen")" "$XTOOL_SDK_VERSION"
+    echo "Not re-registering the cached bundle $stale_seen"
+  fi
   if [ -n "$cached" ]; then
     sdk_install_from "$cached"
   elif [ -n "${XCODE_XIP:-}" ] && [ -f "$XCODE_XIP" ]; then
     cached="XCODE_XIP=$XCODE_XIP"
     sdk_build_and_install "$XCODE_XIP"
+  elif [ -d "$SDK_SRC/Xcode.app" ]; then
+    sdk_build_and_install "$SDK_SRC/Xcode.app"
   else
-    echo "No cached SDK in $SDK_CACHE and no XCODE_XIP given."
+    echo "No usable cached SDK in $SDK_CACHE, no XCODE_XIP given, and no $SDK_SRC/Xcode.app."
     echo "Nothing to repair from. Either point XCODE_XIP at an Xcode $(matching_xcode) .xip,"
     echo "or run once with XCODE_XIP to build the cache for next time."
     exit 1
@@ -588,10 +609,10 @@ fi
 "$HOME/.local/bin/rcodesign" --version
 # ipsw extracts the Swift runtime dylibs from an iPhone's shared cache for LLDB (device-run.sh
 # --lldb, FINDINGS.md 56); pinned + checksummed.
-IPSW_VERSION=3.1.731
+IPSW_VERSION=3.1.743
 case "$(uname -m)" in
-  aarch64) ipsw_arch=arm64 ipsw_sha=a8d373966d79d24537aa17ec8b9a61bbc73964e6200383f7708c53400ad9f42a ;;
-  x86_64) ipsw_arch=x86_64 ipsw_sha=98e5b127641be3511242a5ba9c5872ef34010e5171318b616e5aa80a607749ff ;;
+  aarch64) ipsw_arch=arm64 ipsw_sha=c7976f40d648ede62bc2d8bb80b5e57ab6365d5ba531a917a3515466a753c21e ;;
+  x86_64) ipsw_arch=x86_64 ipsw_sha=56e9ba754781dfeaa3b84f733ad25e63ef8e2683214a321e06b31a0d85f95e4c ;;
 esac
 if ! "$HOME/.local/bin/ipsw" version 2>/dev/null | grep -q "$IPSW_VERSION"; then
   ipsw_tmp=$(mktemp -d)
@@ -658,8 +679,16 @@ echo "== 6. Darwin SDK registration =="
 toolchain_first_on_path
 # Exact match: a broken bundle makes `swift sdk list` print a warning that also
 # contains "darwin" (darwin.artifactbundle).
+sdk_reg=none
 if swift sdk list 2>/dev/null | grep -qx darwin; then
-  echo "Darwin SDK already registered; skipping install."
+  sdk_reg=$(sdk_state "$DARWIN_SDK_BUNDLE" "$XTOOL_SDK_VERSION")
+fi
+# A registered SDK from an older xtool is not "done": xtool dev refuses it. Rebuild it below.
+if [ "$sdk_reg" = stale ]; then
+  sdk_stale_note "$(sdk_bundle_version "$DARWIN_SDK_BUNDLE")" "$XTOOL_SDK_VERSION"
+fi
+if [ "$sdk_reg" = current ]; then
+  echo "Darwin SDK already registered and current ($XTOOL_SDK_VERSION); skipping install."
 elif [ -n "${XCODE_XIP:-}" ] && [ -f "$XCODE_XIP" ]; then
   sdk_build_and_install "$XCODE_XIP"
 elif [ -d "$SDK_SRC/Xcode.app" ]; then
