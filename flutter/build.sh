@@ -4,10 +4,17 @@
 #   flutter/build.sh [--install] <flutter app dir> [KEY=VALUE dart-define ...]
 #
 # Output: <app dir>/build/ios-linux/Runner.ipa (unsigned; `xtool install`
-# signs it). Release mode, arm64. Run flutter/setup.sh once first.
+# signs it) and build/ios-linux/dSYMs. Release mode, arm64. Run
+# flutter/setup.sh once first.
 #
 # Env overrides: FLUTTER, BUNDLE_ID, BUILD_NAME, BUILD_NUMBER, MIN_IOS
 # (defaults come from the app's Xcode project and pubspec.yaml).
+# FLAVOR and TARGET are `flutter build ios --flavor` and `-t`: FLAVOR picks the
+# scheme and its Release configuration, TARGET the Dart entry point (default:
+# the configuration's FLUTTER_TARGET, else lib/main.dart).
+# STRIP_FRAMEWORKS="A B" leaves A.framework and B.framework out of the app.
+# SPLIT_DEBUG_INFO=<dir> and DART_OBFUSCATION=true do what `flutter build
+# --split-debug-info` and `--obfuscate` do.
 set -euo pipefail
 
 install=
@@ -39,17 +46,67 @@ done
 file -b "$flutter_root/bin/cache/artifacts/engine/ios-release/gen_snapshot_arm64" 2>/dev/null | grep -q ELF ||
   { echo "Flutter's iOS gen_snapshot is not the Linux build; run $here/setup.sh" >&2; exit 1; }
 
-pbx=$app/ios/Runner.xcodeproj/project.pbxproj
-setting() { # first value of a build setting that is not the test target's
-  grep -E "^\s*$1 = " "$pbx" | grep -v RunnerTests | head -n1 | sed -E 's/.* = "?([^";]*)"?;.*/\1/'
+configuration=Release
+flavor_opts=()
+if [ -n "${FLAVOR:-}" ]; then
+  # The scheme and configuration `flutter build ios --flavor` picks, and the
+  # defines xcode_backend.dart then passes. On a Mac, flutter assemble reads
+  # appFlavor back from the configuration's scheme, so -dFlavor is the scheme's
+  # spelling; here flavor-scoped assets follow it too, where a Mac uses FLAVOR
+  # as typed. A scheme spelled differently from FLAVOR gets a warning.
+  picked=$(python3 "$here/tools/xcode_settings.py" "$app/ios" --flavor "$FLAVOR")
+  configuration=${picked%%$'\n'*} scheme=${picked#*$'\n'}
+  flavor_opts=("-dFlavor=$scheme" "-dConfiguration=$configuration")
+  [ "$scheme" = "$FLAVOR" ] ||
+    echo "warning: FLAVOR=$FLAVOR builds scheme $scheme; appFlavor and flavor-scoped assets get '$scheme'" >&2
+fi
+setting() { # a build setting of the Runner target in $configuration, expanded as Xcode does
+  python3 "$here/tools/xcode_settings.py" "$app/ios" "$configuration" "$1"
 }
 BUNDLE_ID=${BUNDLE_ID:-$(setting PRODUCT_BUNDLE_IDENTIFIER)}
 MIN_IOS=${MIN_IOS:-$(setting IPHONEOS_DEPLOYMENT_TARGET)}
 families=$(setting TARGETED_DEVICE_FAMILY); families=${families:-1,2}
+info_plist=$(setting INFOPLIST_FILE)
+[ "$(cd "$app/ios" && realpath -m "${info_plist:-Runner/Info.plist}")" = "$app/ios/Runner/Info.plist" ] ||
+  { echo "the $configuration configuration's INFOPLIST_FILE is $info_plist; build.sh reads Runner/Info.plist only" >&2; exit 1; }
+target=${TARGET:-$(setting FLUTTER_TARGET)}; target=${target:-lib/main.dart}
+(cd "$app" && [ -f "$target" ]) ||
+  { echo "no Dart entry point $target in $app (TARGET, else the $configuration configuration's FLUTTER_TARGET, else lib/main.dart)" >&2; exit 1; }
+# The app icon set the configuration names (flutter_flavorizr names one per
+# flavor). A set that lists every size, as Flutter's template does, compiles,
+# but App Store processing has hung on one with no error.
+appicon=$(setting ASSETCATALOG_COMPILER_APPICON_NAME)
+icon_args=()
+[ -n "$appicon" ] && icon_args=(--app-icon "$appicon") ||
+  echo "warning: the $configuration configuration names no app icon set (ASSETCATALOG_COMPILER_APPICON_NAME); the app gets no icon" >&2
+iconset=$app/ios/Runner/Assets.xcassets/$appicon.appiconset
+[ -z "$appicon" ] || [ -f "$iconset/Contents.json" ] ||
+  { echo "no app icon set $appicon in ios/Runner/Assets.xcassets (the $configuration configuration's ASSETCATALOG_COMPILER_APPICON_NAME)" >&2; exit 1; }
+[ -z "$appicon" ] || python3 -c 'import json, sys
+images = json.load(open(sys.argv[1])).get("images", [])
+sys.exit(not images or not all(i.get("idiom") == "universal" and "scale" not in i and i.get("size") == "1024x1024" for i in images))' "$iconset/Contents.json" ||
+  echo "warning: app icon set $appicon lists several sizes; App Store processing has hung on such a set with no error (FINDINGS.md item 68). One 1024x1024 universal image avoids it." >&2
 version=$(sed -n 's/^version: *//p' "$app/pubspec.yaml" | head -n1)
 BUILD_NAME=${BUILD_NAME:-${version%%+*}}
 BUILD_NUMBER=${BUILD_NUMBER:-$([ "${version#*+}" != "$version" ] && echo "${version#*+}" || echo 1)}
-configuration=Release  # this build has no flavors
+# Dart symbols, as `flutter build --split-debug-info=<dir> --obfuscate` passes
+# them to the Xcode build: gen_snapshot writes app.ios-arm64.symbols into the
+# directory (for `flutter symbolize`), and obfuscation needs that directory.
+# A relative directory is taken from where build.sh runs, as flutter's is.
+dart_opts=()
+split_dir=
+if [ -n "${SPLIT_DEBUG_INFO:-}" ]; then
+  split_dir=$(realpath -m "$SPLIT_DEBUG_INFO")
+  dart_opts+=("-dSplitDebugInfo=$split_dir")
+fi
+case ${DART_OBFUSCATION:-false} in
+  true)
+    [ -n "$split_dir" ] ||
+      { echo "DART_OBFUSCATION=true needs SPLIT_DEBUG_INFO, as --obfuscate needs --split-debug-info" >&2; exit 1; }
+    dart_opts+=(-dDartObfuscation=true) ;;
+  false) ;;
+  *) echo "DART_OBFUSCATION must be true or false, not '$DART_OBFUSCATION'" >&2; exit 1 ;;
+esac
 sdk_version=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["Version"])' "$ios_sdk/SDKSettings.json")
 
 out=$app/build/ios-linux
@@ -58,7 +115,9 @@ asm=$out/assemble; shell_pkg=$out/shell; stage=$out/stage; bundle=$out/Payload/R
 for d in "$asm" "$stage" "$out/Payload"; do
   [ ! -d "$d" ] || find "$d" -mindepth 1 -delete
 done
-mkdir -p "$asm" "$shell_pkg" "$stage/sbc" "$bundle/Frameworks" "$bundle/Base.lproj"
+mkdir -p "$asm" "$shell_pkg" "$stage/sbc" "$bundle/Frameworks"
+# flutter/ship.sh signs with this configuration's entitlements.
+printf '%s\n' "$configuration" >"$out/configuration"
 
 export PATH="$here/shims:$sdkb/toolset/bin:$tc:$PATH"
 export XCRUN_SHIM_LOG=$out/shims.log
@@ -70,13 +129,24 @@ echo "== 1. Flutter: Dart AOT, assets, engine framework, native assets"
 defines=""
 for d in "$@"; do defines+="${defines:+,}$(printf '%s' "$d" | base64 -w0)"; done
 (cd "$app" && "$FLUTTER" pub get >/dev/null && "$FLUTTER" assemble --no-version-check --output="$asm" \
-  -dTargetPlatform=ios -dTargetFile=lib/main.dart -dBuildMode=release -dIosArchs=arm64 \
+  -dTargetPlatform=ios -dTargetFile="$target" -dBuildMode=release -dIosArchs=arm64 \
   -dSdkRoot="$ios_sdk" -dTrackWidgetCreation=false -dTreeShakeIcons=true -dCodesignIdentity=- \
+  "${dart_opts[@]+"${dart_opts[@]}"}" "${flavor_opts[@]+"${flavor_opts[@]}"}" \
   ${defines:+--DartDefines="$defines"} release_ios_bundle_flutter_assets) >"$out/assemble.log" 2>&1 ||
   { tail -n 40 "$out/assemble.log" >&2; exit 1; }
 
 echo "== 2. Native: Runner and plugins as one Swift package"
 python3 "$here/tools/gen-shell-package.py" "$app" "$shell_pkg" "$MIN_IOS"
+# Swift autolinking adds a STRONG LC_LOAD_DYLIB for every framework a
+# package's sources import, regardless of the deployment target: a
+# dependency that imports SwiftUI (Sentry 9.x does) drags in SwiftUICore,
+# which only exists from iOS 18 — the strong load then makes dyld abort
+# the app at launch on every older iOS ("Library not loaded"). Xcode
+# weak-links such frameworks; the cross linker cannot be asked to (an
+# explicit -weak_framework trips the framework's allowed-clients tbd
+# rule), so the load command is rewritten after the link. Env-overridable
+# for apps that import other newer-than-MIN_IOS system frameworks.
+WEAK_FRAMEWORKS=${WEAK_FRAMEWORKS:-SwiftUICore}
 # Native-asset frameworks (flutter_soloud, objective_c, sqlite3, ...) are
 # dlopen'ed by the Dart runtime only on demand, but plugins whose SwiftPM
 # package compiles with -undefined dynamic_lookup against the asset's exports
@@ -118,18 +188,37 @@ fi
 
 echo "== 3. Wrapper: icons, storyboards, Info.plist"
 "$tools/actool" "$app/ios/Runner/Assets.xcassets" --compile "$bundle" --platform iphoneos \
-  --app-icon AppIcon --minimum-deployment-target "$MIN_IOS" --target-device iphone --target-device ipad \
+  "${icon_args[@]+"${icon_args[@]}"}" --minimum-deployment-target "$MIN_IOS" --target-device iphone --target-device ipad \
   --output-partial-info-plist "$stage/icon.plist" --output-format human-readable-text >"$out/actool.log" 2>&1 ||
   { cat "$out/actool.log" >&2; exit 1; }
-for sb in "$app"/ios/Runner/Base.lproj/*.storyboard; do
+# The storyboards the Runner target's Copy Bundle Resources phase lists, as
+# Xcode builds them: each is compiled into its X.lproj (which makes its strings
+# localizable) or, when it is not localized, into a plain directory, and the
+# link keeps that directory's X.lproj, so the rest land at the bundle root.
+storyboards=$(python3 "$here/tools/xcode_settings.py" "$app/ios" --storyboards)
+while IFS= read -r rel; do
+  [ -n "$rel" ] || continue
+  lproj=$(basename "$(dirname "$rel")")
+  case $lproj in *.lproj) ;; *) lproj=root ;; esac
+  mkdir -p "$stage/sbc/$lproj"
   "$ibtool" --module Runner --minimum-deployment-target "$MIN_IOS" --target-device iphone \
-    --target-device ipad --output-partial-info-plist "$stage/$(basename "$sb").plist" "$sb" \
-    --compilation-directory "$stage/sbc" 2>"$out/ibtool.log" || { cat "$out/ibtool.log" >&2; exit 1; }
-done
-"$ibtool" --module Runner --target-device iphone --target-device ipad \
-  --link "$bundle/Base.lproj" "$stage"/sbc/*.storyboardc 2>"$out/ibtool.log" || { cat "$out/ibtool.log" >&2; exit 1; }
+    --target-device ipad --output-partial-info-plist "$stage/$(basename "$rel").plist" "$app/ios/$rel" \
+    --compilation-directory "$stage/sbc/$lproj" 2>"$out/ibtool.log" || { cat "$out/ibtool.log" >&2; exit 1; }
+done <<<"$storyboards"
+compiled=("$stage"/sbc/*/*.storyboardc)
+[ ! -e "${compiled[0]}" ] || "$ibtool" --module Runner --target-device iphone --target-device ipad \
+  --link "$bundle" "${compiled[@]}" 2>"$out/ibtool.log" || { cat "$out/ibtool.log" >&2; exit 1; }
 python3 "$here/tools/gen-info-plist.py" "$app/ios/Runner/Info.plist" "$stage/icon.plist" "$bundle/Info.plist" \
-  "$BUNDLE_ID" "$BUILD_NAME" "$BUILD_NUMBER" "$MIN_IOS" "$ios_sdk" "$families"
+  "$BUNDLE_ID" "$BUILD_NAME" "$BUILD_NUMBER" "$MIN_IOS" "$ios_sdk" "$families" "$configuration"
+# The launch screen Info.plist names must be one of them, or the app launches
+# to a black screen.
+launch=$(python3 -c 'import plistlib, sys
+info = plistlib.load(open(sys.argv[1], "rb"))
+print("\n".join(sorted({v for k, v in info.items() if k.split("~")[0] == "UILaunchStoryboardName" and v})))' "$bundle/Info.plist")
+while IFS= read -r name; do
+  [ -z "$name" ] || [ -d "$bundle/$name.storyboardc" ] || compgen -G "$bundle/*.lproj/$name.storyboardc" >/dev/null ||
+    { echo "launch screen $name (Info.plist, $configuration configuration) is not a storyboard the Runner target's resources list" >&2; exit 1; }
+done <<<"$launch"
 
 echo "== 4. Assemble"
 cp "$products/Runner" "$bundle/Runner"
@@ -220,6 +309,27 @@ print("\n".join(e["name"] for e in json.load(open(sys.argv[1]))["extensions"]))'
 fi
 cp "$app/ios/Flutter/AppFrameworkInfo.plist" "$bundle/"
 printf 'APPL????' >"$bundle/PkgInfo"
+# STRIP_FRAMEWORKS names frameworks to leave out (without .framework, separated
+# by spaces or commas), as a Mac build strips the archive and exports it again.
+# The script refuses one that the rest of the app still loads.
+if [ -n "${STRIP_FRAMEWORKS:-}" ]; then
+  IFS=', ' read -r -a strip_list <<<"$STRIP_FRAMEWORKS"
+  strip_names=(); for n in "${strip_list[@]}"; do [ -n "$n" ] && strip_names+=("$n"); done # a trailing or doubled separator
+  if [ "${#strip_names[@]}" -gt 0 ]; then
+    python3 "$here/tools/strip-frameworks.py" "$bundle" "${strip_names[@]}"
+  fi
+fi
+# The weak-link rewrite happens last: strip and the @rpath scan above must
+# see the vanilla load commands (distro llvm-strip rejects an unfamiliar
+# LC_LOAD_WEAK_DYLIB), and nothing after this point parses the binaries
+# except signing, which treats both commands identically.
+if [ -n "${WEAK_FRAMEWORKS:-}" ]; then
+  python3 "$here/tools/weaklink.py" "$bundle/Runner" $WEAK_FRAMEWORKS
+  for appex in "$bundle"/PlugIns/*.appex; do
+    [ -d "$appex" ] || continue
+    python3 "$here/tools/weaklink.py" "$appex/$(basename "${appex%.appex}")" $WEAK_FRAMEWORKS
+  done
+fi
 rm -f "$out/Runner.ipa"
 (cd "$out" && zip -qry Runner.ipa Payload)
 
@@ -268,7 +378,8 @@ echo "dSYMs: $(find "$dsyms" -mindepth 1 -maxdepth 1 -name '*.dSYM' | wc -l) in 
 if [ "${#dsym_missing[@]}" -gt 0 ]; then
   echo "warning: no dSYM for ${dsym_missing[*]} (see $out/dsymutil.log)" >&2
 fi
-echo "Built $out/Runner.ipa ($BUNDLE_ID $BUILD_NAME+$BUILD_NUMBER, iOS $MIN_IOS+)"
+if [ -n "$split_dir" ]; then echo "Dart symbols in $split_dir"; fi
+echo "Built $out/Runner.ipa ($BUNDLE_ID $BUILD_NAME+$BUILD_NUMBER, iOS $MIN_IOS+${FLAVOR:+, $configuration})"
 
 if [ -n "$install" ]; then
   xt=${XTOOL:-$HOME/.local/bin/xtool}

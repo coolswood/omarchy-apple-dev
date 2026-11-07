@@ -7,46 +7,91 @@
 #   flutter/build.sh <app dir>                  # first: the unsigned build
 #   flutter/ship.sh <app dir> <build number>    # then: this script
 #
-# Env: ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_PATH (required; same as ship.sh),
-# ASC_ENTITLEMENTS_PATH and APP_GROUPS (optional, passed to asc.py identity —
-# the app's .entitlements file and its app groups, e.g. "group.example"),
+# The build number argument is optional: it falls back to BUILD_NUMBER, then
+# to the CFBundleVersion build.sh wrote from pubspec.yaml (or its own
+# BUILD_NUMBER).
+#
+# This is the reconcile of the fork's ship.sh (which submits for review) with
+# upstream v0.4.4's (which signs and uploads, never submits): the publish step
+# below is fork-only on purpose. ASC_PROFILE and the entitlements
+# auto-detection are upstream's, kept here.
+#
+# Env: ASC_KEY_ID, ASC_ISSUER_ID, ASC_KEY_PATH (required unless
+# ASC_PROFILE or nothing at all is given for signing; same as ship.sh),
+# ASC_PROFILE + ASC_SIGNING_KEY + ASC_SIGNING_CERT to sign with an identity
+# and profile made elsewhere (no API key on the build machine; no ASC call
+# except the upload), ASC_ENTITLEMENTS_PATH and APP_GROUPS (optional, passed
+# to asc.py identity — the app's .entitlements file and its app groups, e.g.
+# "group.example"). When ASC_ENTITLEMENTS_PATH is unset, the CODE_SIGN_ENTITLEMENTS
+# file of the configuration build.sh recorded is used, as Xcode signs.
 # SHIP_SKIP_UPLOAD=1 to stop after validation, RELEASE_NOTES_JSON pointing at a
 # Play-style release_notes.json: after the upload asc.py publish fills "What's
 # New" in every store locale, attaches the build to the app version (creating
 # the version if needed) and submits it for App Review.
 set -euo pipefail
 
-app=$(readlink -f "${1:?usage: ship.sh <flutter app dir> <build number>}")
-build=${2:?usage: ship.sh <flutter app dir> <build number>}
 here=$(dirname "$(readlink -f "$0")")
 PY="$HOME/pymobile3-venv/bin/python"
 ASC="$here/../tools/asc.py"
 export PATH="$HOME/.local/bin:$PATH"
-: "${ASC_KEY_ID:?ship.sh needs ASC_KEY_ID}" "${ASC_ISSUER_ID:?ship.sh needs ASC_ISSUER_ID}"
-: "${ASC_KEY_PATH:?ship.sh needs ASC_KEY_PATH (the .p8 file)}"
-export ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_PATH
 
+[ $# -ge 1 ] && [ $# -le 2 ] || { echo "usage: ship.sh <flutter app dir> [build number]" >&2; exit 2; }
+app=$(readlink -f "$1")
 src=$app/build/ios-linux/Payload/Runner.app
 [ -d "$src" ] || { echo "no $src; run flutter/build.sh first" >&2; exit 1; }
+out=$app/build/ios-linux
+
+if [ -n "${2:-}" ]; then build=$2
+else
+  build=${BUILD_NUMBER:-}
+  [ -n "$build" ] || build=$("$PY" -c 'import plistlib,sys; print(plistlib.load(open(sys.argv[1],"rb"))["CFBundleVersion"])' "$src/Info.plist")
+fi
+
+signing_mode=identity
+if [ -n "${ASC_PROFILE:-}" ]; then signing_mode=given-identity
+elif [ -z "${ASC_KEY_ID:-}" ]; then signing_mode=test-identity
+fi
+if [ "$signing_mode" = identity ]; then
+  : "${ASC_KEY_ID:?ship.sh needs ASC_KEY_ID}" "${ASC_ISSUER_ID:?ship.sh needs ASC_ISSUER_ID}"
+  : "${ASC_KEY_PATH:?ship.sh needs ASC_KEY_PATH (the .p8 file)}"
+  export ASC_KEY_ID ASC_ISSUER_ID ASC_KEY_PATH
+fi
+
+# The entitlements the app requests, as Xcode signs them: ASC_ENTITLEMENTS_PATH,
+# else the CODE_SIGN_ENTITLEMENTS file of the configuration build.sh recorded
+# (a flavor's own). Reaching the signing step without a file means an
+# entitlement-less signature that installs and validates fine and fails only in
+# the field (a dead Sign in with Apple button, no APNs token, dead Associated
+# Domains), so the missing case still warns.
+if [ -z "${ASC_ENTITLEMENTS_PATH:-}" ] && [ -f "$out/configuration" ]; then
+  configuration=$(cat "$out/configuration")
+  entitlements=$(python3 "$here/tools/xcode_settings.py" "$app/ios" "$configuration" CODE_SIGN_ENTITLEMENTS)
+  if [ -n "$entitlements" ]; then
+    ASC_ENTITLEMENTS_PATH=$(cd "$app/ios" && realpath -m "$entitlements")
+    [ -f "$ASC_ENTITLEMENTS_PATH" ] ||
+      { echo "no $ASC_ENTITLEMENTS_PATH (the $configuration configuration's CODE_SIGN_ENTITLEMENTS)" >&2; exit 1; }
+    export ASC_ENTITLEMENTS_PATH
+    echo "entitlements: $ASC_ENTITLEMENTS_PATH ($configuration)"
+  fi
+fi
+if [ -z "${ASC_ENTITLEMENTS_PATH:-}" ]; then
+  echo "warning: ASC_ENTITLEMENTS_PATH is not set and no CODE_SIGN_ENTITLEMENTS was detected for the built configuration: signing WITHOUT the Sign in with Apple, push (aps-environment) and Associated Domains entitlements — asc.py takes capability entitlements only from that file, not from the profile or the Xcode project" >&2
+fi
 
 echo "== 1. Stage a writable copy =="
-out=$app/build/ios-linux/ship
-rm -rf "$out"
-mkdir -p "$out"
-cp -a "$src" "$out/Runner.app"
+rm -rf "$out/ship" "$out/signing"
+mkdir -p "$out/ship"
+cp -a "$src" "$out/ship/Runner.app"
 # SwiftPM build outputs are read-only; every later step writes into the bundle.
-chmod -R u+w "$out/Runner.app"
-app_dir=$out/Runner.app
+chmod -R u+w "$out/ship/Runner.app"
+app_dir=$out/ship/Runner.app
 
 echo "== 2. Stamp and wrap =="
 "$PY" "$ASC" stamp "$app_dir" "$build"
 "$PY" "$ASC" frameworks "$app_dir"
 
 echo "== 3. Distribution identity =="
-if [ -z "${ASC_ENTITLEMENTS_PATH:-}" ]; then
-  echo "warning: ASC_ENTITLEMENTS_PATH is not set: signing WITHOUT the Sign in with Apple, push (aps-environment) and Associated Domains entitlements — asc.py takes capability entitlements only from that file, not from the profile or the Xcode project" >&2
-fi
-"$PY" "$ASC" identity "$app_dir" "$out/signing"
+"$PY" "$ASC" "$signing_mode" "$app_dir" "$out/signing"
 
 echo "== 4. Sign inside-out =="
 team=$("$PY" -c 'import plistlib,sys; print(plistlib.load(open(sys.argv[1],"rb"))["com.apple.developer.team-identifier"])' \
@@ -64,14 +109,14 @@ done
 for appex in "$app_dir"/PlugIns/*.appex; do
   [ -d "$appex" ] || continue
   ent=$out/signing/$(basename "$appex" .appex)-entitlements.plist
-  [ -f "$ent" ] || { echo "no $ent: identity wrote none for $(basename "$appex")" >&2; exit 1; }
+  [ -f "$ent" ] || { echo "no $ent: $signing_mode wrote none for $(basename "$appex")" >&2; exit 1; }
   rcodesign sign "${sign_args[@]}" --entitlements-xml-file "$ent" "$appex"
 done
 rcodesign sign "${sign_args[@]}" --entitlements-xml-file "$out/signing/entitlements.plist" "$app_dir"
 
 echo "== 5. Package =="
 version=$("$PY" -c 'import plistlib,sys; print(plistlib.load(open(sys.argv[1],"rb"))["CFBundleShortVersionString"])' "$app_dir/Info.plist")
-ipa="$out/Runner-$version-$build.ipa"
+ipa="$out/ship/Runner-$version-$build.ipa"
 rm -f "$ipa"   # zip on an existing archive updates it: deleted files would linger
 stage=$(mktemp -d)
 mkdir "$stage/Payload"
@@ -84,16 +129,20 @@ echo "== 6. Offline App Store validation =="
 "$PY" "$ASC" validate "$ipa"
 
 if [ -z "${SHIP_SKIP_UPLOAD:-}" ]; then
-  echo "== 7. Upload to App Store Connect =="
-  "$PY" "$ASC" upload "$ipa"
-  if [ -n "${RELEASE_NOTES_JSON:-}" ]; then
-    echo "== 8. Publish: whatsnew + build attach + review submission =="
-    # If the build is still processing (publish dies on it), rerun
-    #   asc.py publish <ipa> <notes.json>
-    # once TestFlight shows it VALID — not this script (it would re-upload).
-    "$PY" "$ASC" publish "$ipa" "$RELEASE_NOTES_JSON"
+  if [ "$signing_mode" != identity ]; then
+    echo "$signing_mode signs without the ASC key: skipping the upload (set ASC_KEY_ID/ASC_ISSUER_ID/ASC_KEY_PATH to upload)"
   else
-    echo "RELEASE_NOTES_JSON not set: skipping whatsnew / review submission"
+    echo "== 7. Upload to App Store Connect =="
+    "$PY" "$ASC" upload "$ipa"
+    if [ -n "${RELEASE_NOTES_JSON:-}" ]; then
+      echo "== 8. Publish: whatsnew + build attach + review submission =="
+      # If the build is still processing (publish dies on it), rerun
+      #   asc.py publish <ipa> <notes.json>
+      # once TestFlight shows it VALID — not this script (it would re-upload).
+      "$PY" "$ASC" publish "$ipa" "$RELEASE_NOTES_JSON"
+    else
+      echo "RELEASE_NOTES_JSON not set: skipping whatsnew / review submission"
+    fi
   fi
 else
   echo "SHIP_SKIP_UPLOAD set: stopping after validation"

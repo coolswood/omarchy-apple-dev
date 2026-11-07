@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""App Store steps for ship.sh: stamp, frameworks, identity, test-identity, validate, upload, publish.
+"""App Store steps for ship.sh: stamp, frameworks, identity, given-identity, test-identity, validate,
+upload, publish.
 
 Runs with the pymobiledevice3 venv's python, which already has `cryptography`.
 API key: ASC_KEY_ID, ASC_ISSUER_ID, and ASC_KEY_PATH (default
 ~/.appstoreconnect/AuthKey_<ASC_KEY_ID>.p8). The key needs the App Manager role
 with access to Certificates, Identifiers & Profiles, or Admin.
+ASC_EXPORT_OPTIONS: an Xcode ExportOptions.plist for `identity` (see export_options()).
+`given-identity` needs no API key: ASC_SIGNING_KEY (the path of the PEM private key file),
+ASC_SIGNING_CERT and ASC_PROFILE (see given_identity()).
 """
 import base64
 import datetime
@@ -50,6 +54,16 @@ APP_GROUPS = [g for g in os.environ.get("APP_GROUPS", "").split(",") if g]
 
 def die(msg):
     sys.exit(f"asc.py: {msg}")
+
+
+MIN_CRYPTOGRAPHY = 42  # Certificate.not_valid_after_utc, which certificate() and make_test_profile() read, is new in 42.0.0
+
+
+def require_cryptography(version):
+    """Stop with a plain message when the cryptography module is older than asc.py needs."""
+    if int(version.split(".")[0]) < MIN_CRYPTOGRAPHY:
+        die(f"needs cryptography {MIN_CRYPTOGRAPHY} or later (Certificate.not_valid_after_utc); this python has "
+            f"{version}. Upgrade it: {sys.executable} -m pip install -U cryptography")
 
 
 def b64url(data):
@@ -199,6 +213,16 @@ def frameworks(app_dir):
     app = Path(app_dir)
     with (app / "Info.plist").open("rb") as f:
         info = plistlib.load(f)
+    # A static framework (the slice of a binary target such as sentry-cocoa's static
+    # Sentry.xcframework) is linked into the executable, yet the xtool build copies it to
+    # Frameworks/ as <Name>.framework. Its "binary" is an ar archive, or a fat file of them, with
+    # no Mach-O segments, and rcodesign 0.29.0 panics signing it (macho_signing.rs:385). Nothing
+    # loads it at run time, so remove it; any resource folders inside it go with it.
+    for framework in sorted(app.glob("Frameworks/*.framework")):
+        binary = framework / framework.stem
+        if binary.is_file() and is_static_archive(binary):
+            shutil.rmtree(framework)
+            print(f"removed static {framework.name} (linked into the executable, not embedded)")
     renames = {}
     for dylib in sorted(app.glob("Frameworks/lib*.dylib")):
         name = dylib.name[len("lib"):-len(".dylib")]
@@ -220,6 +244,26 @@ def frameworks(app_dir):
         if renames and path.is_file() and not path.is_symlink():
             rename_dylibs(path, renames)
     print(f"wrapped {len(renames)} dylib(s) as frameworks")
+
+
+def is_static_archive(path):
+    """True for an ar archive, or a fat file whose every slice is one."""
+    data = path.read_bytes()
+    if data.startswith(b"!<arch>\n"):
+        return True
+    if data[:4] not in (b"\xca\xfe\xba\xbe", b"\xca\xfe\xba\xbf"):
+        return False
+    fat64 = data[3] == 0xBF
+    entry = 32 if fat64 else 20
+    nfat = struct.unpack_from(">I", data, 4)[0] if len(data) >= 8 else 0
+    if len(data) < 8 + nfat * entry:
+        die(f"{path}: truncated fat header ({len(data)} bytes)")
+    slices = []
+    for i in range(nfat):
+        off = 8 + i * entry
+        offset = struct.unpack_from(">Q" if fat64 else ">I", data, off + 8)[0]
+        slices.append(data[offset:offset + 8] == b"!<arch>\n")
+    return bool(slices) and all(slices)
 
 
 def rename_dylibs(path, renames):
@@ -433,21 +477,176 @@ def ensure_app_groups(identifiers):
     return attached
 
 
+# -- export options ----------------------------------------------------------
+
+APP_STORE_METHODS = ("app-store-connect", "app-store")  # Xcode 15.3 renamed app-store
+DISTRIBUTION_CERTIFICATES = ("Apple Distribution", "iOS Distribution")
+EXPORT_KEYS = {"method", "teamID", "provisioningProfiles", "signingCertificate"}
+
+
+def export_options():
+    """What asc.py takes from the Xcode ExportOptions.plist in ASC_EXPORT_OPTIONS ({} when unset):
+    the method must be an App Store one, teamID and signingCertificate are checked against the
+    identity, and provisioningProfiles (bundle id -> profile name or UUID) picks existing profiles.
+    Keys about Xcode's own export (uploadSymbols, signingStyle, destination, ...) are reported as
+    ignored."""
+    path = os.environ.get("ASC_EXPORT_OPTIONS")
+    if not path:
+        return {}
+    with Path(path).open("rb") as f:
+        opts = plistlib.load(f)
+    if not isinstance(opts, dict):
+        die("ASC_EXPORT_OPTIONS must contain an export options dictionary")
+    # xcodebuild -exportArchive defaults to development when the plist names no method.
+    method = opts.get("method", "development")
+    if method not in APP_STORE_METHODS:
+        die(f"export method '{method}' is not supported: asc.py signs for App Store distribution only "
+            "(method app-store-connect); for development use tools/provision-dev.py and tools/sign-dev.sh")
+    team = opts.get("teamID")
+    if team is not None and not (isinstance(team, str) and re.fullmatch(r"[A-Z0-9]{10}", team)):
+        die(f"export options teamID '{team}' is not a 10-character team id")
+    profiles = opts.get("provisioningProfiles", {})
+    if not (isinstance(profiles, dict) and all(isinstance(k, str) and isinstance(v, str) and v
+                                               for k, v in profiles.items())):
+        die("export options provisioningProfiles must map bundle ids to profile names or UUIDs")
+    certificate_name = opts.get("signingCertificate")
+    if certificate_name is not None and not isinstance(certificate_name, str):
+        die("export options signingCertificate must be a string")
+    ignored = sorted(set(opts) - EXPORT_KEYS)
+    if ignored:
+        print(f"export options: ignored {', '.join(ignored)} (Xcode export settings)")
+    return {"team": team, "profiles": profiles, "certificate": certificate_name}
+
+
+def check_signing_certificate(wanted, cert_der):
+    """ExportOptions signingCertificate is a certificate kind ("Apple Distribution", optionally with
+    ": Name (TEAM)") or a SHA-1 fingerprint; the local identity must be that certificate."""
+    if not wanted:
+        return
+    if re.fullmatch(r"[0-9A-Fa-f]{40}", wanted):
+        if hashlib.sha1(cert_der).hexdigest().upper() != wanted.upper():
+            die(f"export options signingCertificate {wanted} is not the local Apple Distribution "
+                "certificate; its private key is not on this machine")
+    elif not any(wanted == kind or wanted.startswith(kind + ":") for kind in DISTRIBUTION_CERTIFICATES):
+        die(f"export options signingCertificate '{wanted}' is not a distribution certificate")
+
+
+def select_profile(listed, wanted, ident):
+    """The active App Store profile among `listed` (App Store Connect profiles) whose name or UUID
+    is `wanted`."""
+    found = [p for p in listed if wanted in (p["attributes"].get("name"), p["attributes"].get("uuid"))]
+    if not found:
+        die(f"no active App Store profile named or with UUID '{wanted}' "
+            f"(export options provisioningProfiles for {ident})")
+    return base64.b64decode(found[0]["attributes"]["profileContent"])
+
+
+def check_named_profile(payload, wanted, ident, cert_der):
+    """A profile picked by the export options must be for this bundle id and list the local
+    certificate: rcodesign signs with the local key, and a profile made for another certificate
+    makes the signature invalid."""
+    app_id = payload.get("Entitlements", {}).get("application-identifier", "")
+    pattern = app_id.split(".", 1)[1] if "." in app_id else ""
+    if not (pattern == ident or (pattern.endswith("*") and ident.startswith(pattern[:-1]))):
+        die(f"profile '{wanted}' is for {app_id or 'no app id'}, not {ident}")
+    if cert_der not in payload.get("DeveloperCertificates", []):
+        die(f"profile '{wanted}' does not list the local Apple Distribution certificate; add it to the "
+            "profile in Apple Developer, or drop the provisioningProfiles entry so asc.py makes its own")
+
+
+def check_profile_team(payload, team, ident):
+    if team and payload.get("TeamIdentifier", [None])[0] != team:
+        die(f"profile for {ident} is in team {payload.get('TeamIdentifier', ['?'])[0]}, "
+            f"export options teamID is {team}")
+
+
 def identity(app_dir, out_dir):
     """Apple identity via the API: register each bundle id, write embedded.mobileprovision into the
     app and every PlugIns/*.appex, and write per-bundle entitlements and the signing key/cert into
-    out_dir."""
+    out_dir. ASC_EXPORT_OPTIONS (an Xcode ExportOptions.plist) is honoured as export_options()
+    says."""
+    opts = export_options()
     cert_id, key_path, cert_path = certificate()
+    cert_der = cert_path.read_bytes()
+    check_signing_certificate(opts.get("certificate"), cert_der)
     idents = [ident for _, ident in bundles(app_dir)]
     attached = ensure_app_groups(idents)
-    prov_for = lambda ident, c=attached, ci=cert_id: profile(
-        ident, ci, force_create=(ident in c))
+    named = opts.get("profiles", {})
+    listed = None
+
+    def prov_for(ident):
+        nonlocal listed
+        if ident in named:
+            if listed is None:
+                listed = call("GET", "/v1/profiles?filter[profileType]=IOS_APP_STORE"
+                                     "&filter[profileState]=ACTIVE&limit=200")["data"]
+            prov = select_profile(listed, named[ident], ident)
+            check_named_profile(profile_payload(prov), named[ident], ident, cert_der)
+        else:
+            prov = profile(ident, cert_id, force_create=(ident in attached))
+        check_profile_team(profile_payload(prov), opts.get("team"), ident)
+        return prov
     install_all_bundles(app_dir, out_dir, prov_for, key_path, cert_path)
+
+
+def key_matches_certificate(key_pem, cert_der):
+    public = serialization.Encoding.DER, serialization.PublicFormat.SubjectPublicKeyInfo
+    key = serialization.load_pem_private_key(key_pem, password=None)
+    cert = x509.load_der_x509_certificate(cert_der)
+    return key.public_key().public_bytes(*public) == cert.public_key().public_bytes(*public)
+
+
+def read_given_files(names):
+    """The contents of the files the variables name. A read error stops without the value: the key
+    text put in ASC_SIGNING_KEY instead of its path would otherwise be printed with the traceback."""
+    contents = {}
+    for name in names:
+        try:
+            contents[name] = Path(os.environ[name]).read_bytes()
+        except OSError as e:
+            die(f"{name} must be the path of a readable file ({e.strerror}); the value is not shown")
+    return contents
+
+
+def given_identity(app_dir, out_dir):
+    """Sign with an Apple Distribution identity and an App Store profile made elsewhere, for example
+    by a release server that keeps the API key: ASC_SIGNING_KEY (the path of the PEM private key
+    file), ASC_SIGNING_CERT (the path of its certificate, DER) and ASC_PROFILE (the path of the
+    app's App Store profile). No App
+    Store Connect call is made and no certificate is created. The profile must be for the app's
+    bundle id, in the export options' team, and list the certificate; the key must be the
+    certificate's. An app with extensions needs a profile per bundle, so it is refused."""
+    opts = export_options()
+    names = ("ASC_SIGNING_KEY", "ASC_SIGNING_CERT", "ASC_PROFILE")
+    missing = [name for name in names if not os.environ.get(name)]
+    if missing:
+        die(f"given-identity needs {', '.join(missing)}")
+    key_path, cert_path, prov_path = (Path(os.environ[name]) for name in names)
+    contents = read_given_files(names)
+    cert_der = contents["ASC_SIGNING_CERT"]
+    check_signing_certificate(opts.get("certificate"), cert_der)
+    if not key_matches_certificate(contents["ASC_SIGNING_KEY"], cert_der):
+        die("ASC_SIGNING_KEY is not the private key of ASC_SIGNING_CERT")
+    found = bundles(app_dir)
+    if len(found) > 1:
+        die(f"given-identity signs the app only; {', '.join(i for _, i in found[1:])} would need "
+            "a profile of its own")
+    ident = found[0][1]
+    prov = contents["ASC_PROFILE"]
+    payload = profile_payload(prov)
+    check_named_profile(payload, prov_path.name, ident, cert_der)
+    check_profile_team(payload, opts.get("team"), ident)
+    install_all_bundles(app_dir, out_dir, lambda _: prov, key_path, cert_path)
 
 
 def test_identity(app_dir, out_dir):
     """A local stand-in with the same shape as an Apple Distribution identity and App Store profile,
-    signed by a self-made certificate. It exercises signing and validation; Apple rejects it."""
+    signed by a self-made certificate. It exercises signing and validation; Apple rejects it.
+    ASC_EXPORT_OPTIONS is checked (an unsupported method fails as it would with the real
+    identity); its team, certificate and profiles do not apply to the TEST identity."""
+    if export_options():
+        print("export options: teamID, signingCertificate and provisioningProfiles are not applied "
+              "to the TEST identity")
     team = TEST_TEAM
     key_path, cert_path = TEST_IDENTITY_DIR / "key.pem", TEST_IDENTITY_DIR / "cert.der"
     now = datetime.datetime.now(datetime.timezone.utc)
@@ -584,6 +783,21 @@ def capability_entitlements(requested, granted, ident):
     return signed
 
 
+def link_signing_file(dest, src):
+    """Makes ship-signing/<name> a link to the signing key or certificate. The link is absolute: a
+    relative one would resolve against ship-signing, not the directory the path was given in. A
+    destination that already is the source (the same file, or a link to it) is left as it is: the
+    source may be the very file in ship-signing, and unlinking it would lose the key. A link to
+    something else is replaced. A regular file that is not the source is not ours to remove."""
+    src = Path(os.path.abspath(src))
+    if dest.exists() and src.exists() and os.path.samefile(dest, src):
+        return
+    if dest.exists() and not dest.is_symlink():
+        die(f"{dest} is a file that is not {src}; remove it or give that path, nothing was replaced")
+    dest.unlink(missing_ok=True)
+    dest.symlink_to(src)
+
+
 def install_all_bundles(app_dir, out_dir, prov_for, key_path, cert_path):
     """For every bundle (app + each PlugIns/*.appex): embed the profile, write a per-bundle
     entitlements plist (application-identifier, team-identifier, beta-reports-active if granted,
@@ -624,9 +838,7 @@ def install_all_bundles(app_dir, out_dir, prov_for, key_path, cert_path):
         print(f"identity for {entitlements['application-identifier']}: profile {payload['UUID']}, "
               f"expires {payload['ExpirationDate']:%Y-%m-%d}")
     for name, src in (("key.pem", key_path), ("cert.der", cert_path)):
-        dest = out / name
-        dest.unlink(missing_ok=True)
-        dest.symlink_to(src)
+        link_signing_file(out / name, src)
 
 
 def bundle_identifier(app_dir):
@@ -1324,9 +1536,13 @@ def publish(target, notes_path):
 
 
 if __name__ == "__main__":
-    commands = {"stamp": stamp, "frameworks": frameworks, "identity": identity, "test-identity": test_identity,
+    commands = {"stamp": stamp, "frameworks": frameworks, "identity": identity,
+                "given-identity": given_identity, "test-identity": test_identity,
                 "validate": validate, "upload": upload, "publish": publish}
     if len(sys.argv) < 2 or sys.argv[1] not in commands:
-        die("usage: asc.py stamp APP BUILD | frameworks APP | identity APP OUTDIR | test-identity APP OUTDIR"
-            " | validate IPA | upload IPA | publish IPA|APP NOTES_JSON")
+        die("usage: asc.py stamp APP BUILD | frameworks APP | identity APP OUTDIR | given-identity APP OUTDIR"
+            " | test-identity APP OUTDIR | validate IPA | upload IPA | publish IPA|APP NOTES_JSON")
+    if sys.argv[1] in ("identity", "test-identity"):  # the two commands that reach not_valid_after_utc
+        import cryptography
+        require_cryptography(cryptography.__version__)
     commands[sys.argv[1]](*sys.argv[2:])
