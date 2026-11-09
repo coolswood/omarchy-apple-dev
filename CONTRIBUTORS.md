@@ -4,14 +4,16 @@
 
 - [@17xande](https://github.com/17xande)
 - [@AbdurahmanAlmehdi](https://github.com/AbdurahmanAlmehdi)
-- [@coolswood](https://github.com/coolswood)
+- [@c4software](https://github.com/c4software)
 - [@DavidSnoble](https://github.com/DavidSnoble)
 - [@DerrickDW](https://github.com/DerrickDW)
 - [@dl-alexandre](https://github.com/dl-alexandre)
 - [@Gobbledegookie](https://github.com/Gobbledegookie)
 - [@imatrixcz](https://github.com/imatrixcz)
+- [@joshuaswarren](https://github.com/joshuaswarren)
 - [@lacion](https://github.com/lacion)
 - [@m9tdev](https://github.com/m9tdev)
+- [@marcostorto](https://github.com/marcostorto)
 - [@rynalde](https://github.com/rynalde)
 - [@sharmis-tp](https://github.com/sharmis-tp)
 
