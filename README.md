@@ -35,7 +35,7 @@ adds TestFlight and the App Store.
 | Tool | Version | Source |
 |------|---------|--------|
 | Swift | 6.4.1 in the latest fresh-install check | AUR `swift-bin` |
-| xtool | main before xtool-org/xtool#389 (`03fb48c`) + the 11 fork commits + xtool-org/xtool#430 and #422 (pin `c9f4363`, tag `omarchy-main-pre389-pin` of the fork) | built from source by the installer |
+| xtool | main (`a2875dd`, with xtool-org/xtool#375, #430, #422 and #432) + the 11 fork commits (pin `7cc56c3`, fork tag `omarchy-main-pin`) | built from source by the installer |
 | pymobiledevice3 | latest from PyPI at install time | venv |
 | cryptography | 42 or later; a dependency of pymobiledevice3, in the same venv. `tools/asc.py identity` and `test-identity` stop with a message naming the version if it is older | venv |
 | LLDB | bundled with the installed Swift toolchain | `swift-bin` |
@@ -260,6 +260,18 @@ id, creates an Apple Distribution certificate (the private key stays in
 `~/.config/omarchy-apple-dev/distribution/`) and an App Store profile, signs
 with `rcodesign`, validates the `.ipa` offline (any `FAIL` stops it), uploads
 and prints Apple's processing result. It never submits a build for review.
+
+The console steps that remain after the upload are available as an opt-in
+command, `tools/asc.py publish IPA|APP NOTES_JSON` (same key variables;
+`ship.sh` itself stays as it is). Point `NOTES_JSON` at a Play-style
+`release_notes.json` (`[{"language": "en-US", "text": ...}]`, the same file
+Google Play takes): `publish` finds the App Store version for the bundle's
+version string (creates it when missing), attaches the uploaded build once
+TestFlight shows it `VALID` and fills "What's New" in every store locale
+(locales are mapped: `he` → `iw`, `zh-Hans` → `zh-CN`, base language, then
+`en-US`; emoji are stripped, App Review rejects them). Like `ship.sh` itself,
+it never submits a build for review — after "What's New" it stops and says
+submission is a manual step. Re-runs change nothing that is already done.
 
 Without a key it signs with a local TEST identity. That proves the pipeline
 only; Apple rejects the signature.
