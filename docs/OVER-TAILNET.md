@@ -28,7 +28,10 @@ phone's tailnet address and the tool scans ports 49152 to 49167.
    `~/.local/share/pymobiledevice3/remote_<udid>.plist` with the host identifier pinned, so the file works on any host.
 4. Copy that file to the same path on every host that should reach the phone (mode 600). It holds a private key: treat
    it like an SSH key.
-5. Find the phone's tailnet address: `tailscale status` (the `iOS` line).
+5. Find the phone's tailnet address: `tailscale --socket=/run/tailscale/tailscaled-hs.sock status` (on
+   this box the phone lives on the headscale socket; the phone is the `localhost` line, `100.81.0.2` —
+   the default-socket `tailscale status` does not show it). Or skip the lookup: pass the phone's IP
+   straight to the commands below.
 
 ## Use it
 
@@ -165,7 +168,7 @@ left with a suspended app.
 
 | You see | Meaning | Fix |
 |---|---|---|
-| `ConnectionRefusedError` on every port 49152-49167 | The phone has no Wi-Fi up (cellular only), or Tailscale is off | Turn Wi-Fi on; check `tailscale status` shows the phone online |
+| `ConnectionRefusedError` on every port 49152-49167 | The phone has no Wi-Fi up (cellular only), or Tailscale is off | Turn Wi-Fi on; check `tailscale --socket=/run/tailscale/tailscaled-hs.sock status` shows the phone online (on this box the phone is on the headscale socket, node `localhost`) |
 | `tailscale ping` times out | Tailscale is off on the phone, or the phone is asleep with no network | Open the Tailscale app |
 | `ConnectionTerminatedError` right after connect | The pairing record does not match this host | Re-copy the record made by `tailnet-tunnel.py pair` (it pins the host identifier) |
 | `NO_CIPHERS_AVAILABLE` | Python without TLS-PSK ciphers (uv standalone builds) | Use distribution Python 3.13 or newer |
