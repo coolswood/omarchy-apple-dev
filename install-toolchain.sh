@@ -609,10 +609,10 @@ fi
 "$HOME/.local/bin/rcodesign" --version
 # ipsw extracts the Swift runtime dylibs from an iPhone's shared cache for LLDB (device-run.sh
 # --lldb, FINDINGS.md 56); pinned + checksummed.
-IPSW_VERSION=3.1.743
+IPSW_VERSION=3.1.745
 case "$(uname -m)" in
-  aarch64) ipsw_arch=arm64 ipsw_sha=c7976f40d648ede62bc2d8bb80b5e57ab6365d5ba531a917a3515466a753c21e ;;
-  x86_64) ipsw_arch=x86_64 ipsw_sha=56e9ba754781dfeaa3b84f733ad25e63ef8e2683214a321e06b31a0d85f95e4c ;;
+  aarch64) ipsw_arch=arm64 ipsw_sha=5b978bef93dec4c0d66a1760e81ceb01efe817cafadd6e7095edc1aa25db0b45 ;;
+  x86_64) ipsw_arch=x86_64 ipsw_sha=fc833392a558685a384bab3bb8cc77a22ec99f7982a63edfbb632b83dc55b589 ;;
 esac
 if ! "$HOME/.local/bin/ipsw" version 2>/dev/null | grep -q "$IPSW_VERSION"; then
   ipsw_tmp=$(mktemp -d)
