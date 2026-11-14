@@ -826,12 +826,26 @@ class Generator:
             lo, hi = req["minimumVersion"], bump_minor(req["minimumVersion"])
             return f"{sw_sy(lo)}..<{sw_sy(hi)}"
         if kind == "exactVersion":
-            return f"exact: {sw_sy(req['exactVersion'])}"
+            # Xcode writes the pinned version under `version`; `exactVersion` kept for hand-written projects
+            version = req.get("version") or req.get("exactVersion")
+            if version:
+                return f"exact: {sw_sy(version)}"
+            rev = revs.get(ident)
+            if rev:
+                self.warn(f"exact version requirement without a version for {url}; "
+                          "pinned to Package.resolved revision")
+                return f"revision: {sw_sy(rev)}"
+            self.warn(f"exact version requirement without a version for {url}; skipped")
+            return None
         if kind == "versionRange":
             return f"{sw_sy(req['minimumVersion'])}..<{sw_sy(req['maximumVersion'])}"
         if kind == "branch":
+            if revs.get(ident):
+                self.warn(f"{url} is pinned to branch {req.get('branch', '')!r}: the build follows the branch head, "
+                          f"not the Package.resolved commit {revs[ident][:8]} that Xcode built")
             return f"branch: {sw_sy(req.get('branch', ''))}"
-            return f"revision: {sw_sy(req.get('revision', ''))}"
+        if kind == "revision" and req.get("revision"):
+            return f"revision: {sw_sy(req['revision'])}"
         rev = revs.get(ident)
         if rev:
             self.warn(f"no requirement kind for {url}; pinned to Package.resolved revision")
@@ -2388,6 +2402,9 @@ SELF_TEST_PROJ = r"""// !$*UTF8*$!
 			packageProductDependencies = (
 				FFFF00000000000000000001 /* Logging */,
 				FFFF00000000000000000002 /* Branchy */,
+				FFFF00000000000000000004 /* Exacty */,
+				FFFF00000000000000000005 /* Legacy */,
+				FFFF00000000000000000006 /* Noversion */,
 				FFFF00000000000000000003 /* DemoLib */,
 			);
 			productName = DemoApp;
@@ -2422,6 +2439,9 @@ SELF_TEST_PROJ = r"""// !$*UTF8*$!
 			packageReferences = (
 				EEEE0000000000000000000A /* XCRemoteSwiftPackageReference "swift-log" */,
 				EEEE0000000000000000000B /* XCRemoteSwiftPackageReference "Branchy" */,
+				EEEE00000000000000000014 /* XCRemoteSwiftPackageReference "Exacty" */,
+				EEEE00000000000000000015 /* XCRemoteSwiftPackageReference "Legacy" */,
+				EEEE00000000000000000016 /* XCRemoteSwiftPackageReference "Noversion" */,
 				EEEE00000000000000000013 /* XCLocalSwiftPackageReference "DemoPkg" */,
 			);
 			targets = (
@@ -2546,6 +2566,29 @@ SELF_TEST_PROJ = r"""// !$*UTF8*$!
 				kind = branch;
 			};
 		};
+		EEEE00000000000000000014 /* XCRemoteSwiftPackageReference "Exacty" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://example.com/exacty.git";
+			requirement = {
+				kind = exactVersion;
+				version = 1.0.3;
+			};
+		};
+		EEEE00000000000000000015 /* XCRemoteSwiftPackageReference "Legacy" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://example.com/legacy.git";
+			requirement = {
+				exactVersion = 2.0.0;
+				kind = exactVersion;
+			};
+		};
+		EEEE00000000000000000016 /* XCRemoteSwiftPackageReference "Noversion" */ = {
+			isa = XCRemoteSwiftPackageReference;
+			repositoryURL = "https://example.com/noversion.git";
+			requirement = {
+				kind = exactVersion;
+			};
+		};
 /* End XCRemoteSwiftPackageReference section */
 
 /* Begin XCLocalSwiftPackageReference section */
@@ -2565,6 +2608,21 @@ SELF_TEST_PROJ = r"""// !$*UTF8*$!
 			isa = XCSwiftPackageProductDependency;
 			package = EEEE0000000000000000000B /* XCRemoteSwiftPackageReference "Branchy" */;
 			productName = Branchy;
+		};
+		FFFF00000000000000000004 /* Exacty */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = EEEE00000000000000000014 /* XCRemoteSwiftPackageReference "Exacty" */;
+			productName = Exacty;
+		};
+		FFFF00000000000000000005 /* Legacy */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = EEEE00000000000000000015 /* XCRemoteSwiftPackageReference "Legacy" */;
+			productName = Legacy;
+		};
+		FFFF00000000000000000006 /* Noversion */ = {
+			isa = XCSwiftPackageProductDependency;
+			package = EEEE00000000000000000016 /* XCRemoteSwiftPackageReference "Noversion" */;
+			productName = Noversion;
 		};
 		FFFF00000000000000000003 /* DemoLib */ = {
 			isa = XCSwiftPackageProductDependency;
@@ -2594,6 +2652,7 @@ def self_test():
         _self_test(root)
         _self_test_collision(root)
         _self_test_intent(root)
+        _self_test_requirement(root)
     except BaseException:
         # weakref.finalize would delete a TemporaryDirectory at exit even when
         # referenced, so keep the dir by simply not removing it
@@ -2693,6 +2752,15 @@ def _self_test(root):
         ("tools-version", "// swift-tools-version: 6.2" in pkg),
         ("platform", '.iOS("16.4")' in pkg),
         ("upToNextMinor range", '"1.5.3"..<"1.6.0"' in pkg),
+        ("exact version as Xcode writes it",
+         '.package(url: "https://example.com/exacty.git", exact: "1.0.3")' in pkg),
+        ("exact version under the legacy exactVersion key",
+         '.package(url: "https://example.com/legacy.git", exact: "2.0.0")' in pkg),
+        ("exact version missing: skipped, no empty pin",
+         "noversion.git" not in pkg and 'exact: ""' not in pkg),
+        ("exact version missing: warned",
+         "exact version requirement without a version for https://example.com/noversion.git"
+         in warnings_text),
         ("branch requirement preserved",
          '.package(url: "https://example.com/branchy.git", branch: "main")' in pkg),
         ("branch requirement has no warning", "cannot build branch" not in warnings_text),
@@ -3312,6 +3380,50 @@ def _self_test_intent(root):
         raise SystemExit("intent self-test FAILED: " + "; ".join(failed))
     print("intent self-test passed "
           f"({len(checks)} checks, present={present})")
+
+
+def _self_test_requirement(root):
+    """A package pinned in Xcode by revision ("Commit" rule, kind = revision) must give `revision:` with the
+    commit Xcode stores in the project, with no warning. A branch pin keeps `branch:`, and says when Xcode's
+    Package.resolved holds a commit for it, because the build then follows the branch head, not that commit."""
+    proj = os.path.join(root, "ReqApp.xcodeproj")
+    os.makedirs(proj)
+    with open(os.path.join(proj, "project.pbxproj"), "w") as f:
+        f.write(COLLISION_PROJ)
+    gen = Generator(proj, out_dir=os.path.join(root, "gen-req"))
+    url = "https://github.com/airbnb/HorizonCalendar"
+    resolved = {"horizoncalendar": "9999999999999999999999999999999999999999"}
+    pinned = {"repositoryURL": url, "requirement": {"kind": "revision", "revision": "a1b2c3d4e5f6"}}
+    no_value = {"repositoryURL": url, "requirement": {"kind": "revision"}}
+    on_branch = {"repositoryURL": url, "requirement": {"kind": "branch", "branch": "master"}}
+
+    def run(ref, revs):
+        gen.warnings = []
+        return gen.requirement(ref, revs), list(gen.warnings)
+
+    got, warned = run(pinned, resolved)
+    checks = [("revision pin uses the project's commit", got == 'revision: "a1b2c3d4e5f6"'),
+              ("revision pin has no warning", warned == [])]
+    got, warned = run(pinned, {})
+    checks += [("revision pin without Package.resolved", got == 'revision: "a1b2c3d4e5f6"'),
+               ("revision pin without Package.resolved has no warning", warned == [])]
+    got, warned = run(no_value, resolved)
+    checks += [("revision pin with no commit falls back to Package.resolved",
+                got == 'revision: "9999999999999999999999999999999999999999"'),
+               ("that fallback warns", len(warned) == 1)]
+    got, warned = run(no_value, {})
+    checks += [("revision pin with no commit and no Package.resolved is skipped", got is None),
+               ("that skip warns", len(warned) == 1)]
+    got, warned = run(on_branch, resolved)
+    checks += [("branch pin keeps the branch", got == 'branch: "master"'),
+               ("branch pin names the Package.resolved commit it does not follow",
+                len(warned) == 1 and url in warned[0] and "master" in warned[0] and "99999999" in warned[0])]
+    got, warned = run(on_branch, {})
+    checks += [("branch pin without Package.resolved has no warning", got == 'branch: "master"' and warned == [])]
+    failed = [n for n, ok in checks if not ok]
+    if failed:
+        raise SystemExit("requirement self-test FAILED: " + "; ".join(failed))
+    print(f"requirement self-test passed ({len(checks)} checks)")
 
 
 # Minimal classic-group app for the launch-storyboard transform: sources under
